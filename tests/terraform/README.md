@@ -1,0 +1,1 @@
+Terraform validation tests placeholder.

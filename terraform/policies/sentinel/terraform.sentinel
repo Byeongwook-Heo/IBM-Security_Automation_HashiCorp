@@ -1,0 +1,1 @@
+# Sentinel examples: deny public S3, 0.0.0.0/0 SSH, unencrypted RDS/EBS, disabled CloudTrail, hardcoded secrets, and missing required tags.

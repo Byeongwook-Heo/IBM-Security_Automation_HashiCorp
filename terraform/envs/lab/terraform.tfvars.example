@@ -1,0 +1,17 @@
+aws_region = "us-east-1"
+name_prefix = "ibm-hc-lab"
+enable_modules = true
+# qradar_api_token = set via TF_VAR_qradar_api_token, never commit real values
+
+enterprise_image_uris = {
+  qradar      = ""
+  guardium    = ""
+  instana     = ""
+  turbonomic  = ""
+  kubecost    = ""
+  concert     = ""
+  vault       = ""
+  boundary    = ""
+  nomad       = ""
+}
+# enterprise_license_secret_arns and enterprise_license_vault_paths must be supplied securely outside git.

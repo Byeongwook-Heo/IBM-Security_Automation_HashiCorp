@@ -1,0 +1,14 @@
+services:
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
+    env_file: .env.example
+  frontend:
+    build: ./frontend
+    ports: ["5173:5173"]
+    environment: ["VITE_API_URL=http://localhost:8000"]
+    depends_on: [backend]
+  db:
+    image: postgres:16-alpine
+    environment: ["POSTGRES_USER=portal", "POSTGRES_PASSWORD=portal", "POSTGRES_DB=portal"]
+    ports: ["5432:5432"]

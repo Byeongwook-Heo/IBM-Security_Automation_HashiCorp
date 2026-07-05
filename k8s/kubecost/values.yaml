@@ -1,0 +1,11 @@
+kubecostToken: ${KUBECOST_TOKEN}
+prometheus:
+  server:
+    persistentVolume:
+      enabled: true
+
+enterprise:
+  enabled: true
+  licenseSecretName: kubecost-enterprise-license
+imagePullSecrets:
+  - name: ${ENTERPRISE_IMAGE_PULL_SECRET_NAME}

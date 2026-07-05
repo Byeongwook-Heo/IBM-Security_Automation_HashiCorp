@@ -1,0 +1,8 @@
+name: security-scan
+on: [push, pull_request]
+jobs:
+  scan-placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Run tflint, checkov, trivy, gitleaks in hardened CI with approved policies"

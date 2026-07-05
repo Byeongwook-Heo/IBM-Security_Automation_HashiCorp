@@ -1,0 +1,9 @@
+agent:
+  key: ${INSTANA_AGENT_KEY}
+  endpointHost: ${INSTANA_ENDPOINT_HOST}
+
+enterprise:
+  enabled: true
+  endpoint: ${INSTANA_ENTERPRISE_ENDPOINT}
+imagePullSecrets:
+  - name: ${ENTERPRISE_IMAGE_PULL_SECRET_NAME}

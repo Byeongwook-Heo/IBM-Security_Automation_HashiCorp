@@ -1,0 +1,4 @@
+outputs:
+  qradar:
+    host: ${QRADAR_SYSLOG_HOST}
+    port: 514

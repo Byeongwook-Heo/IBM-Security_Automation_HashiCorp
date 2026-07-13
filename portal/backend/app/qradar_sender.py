@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json, socket
 from .models import CommonEvent
 
@@ -9,8 +11,10 @@ def to_leef(event: CommonEvent) -> str:
 
 def send_event(event: CommonEvent, host: str | None = None, port: int = 514, dry_run: bool = True) -> dict:
     payload = to_json_syslog(event)
-    if dry_run or not host:
+    if dry_run:
         return {"dry_run": True, "payload": payload, "leef": to_leef(event)}
+    if not host:
+        raise RuntimeError("QRADAR_SYSLOG_HOST is required for live delivery")
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.sendall(payload.encode())
     return {"dry_run": False, "bytes": len(payload)}

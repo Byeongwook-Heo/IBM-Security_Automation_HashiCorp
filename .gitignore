@@ -1,9 +1,17 @@
 .env
+.DS_Store
 *.tfstate
 *.tfstate.*
+*.tfplan
+*.auto.tfvars
+terraform/envs/*/backend.tf
+terraform/envs/*/.backend.*.hcl
 .terraform/
 __pycache__/
 .pytest_cache/
 node_modules/
 dist/
+*.egg-info/
+portal/build/
+observability/build/
 .coverage

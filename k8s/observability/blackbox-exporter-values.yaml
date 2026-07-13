@@ -1,0 +1,22 @@
+config:
+  modules:
+    http_service:
+      prober: http
+      timeout: 10s
+      http:
+        method: GET
+        preferred_ip_protocol: ip4
+        follow_redirects: true
+        valid_status_codes: [200, 204, 301, 302, 401, 403, 429, 472, 473]
+        tls_config:
+          insecure_skip_verify: true
+    tcp_connect:
+      prober: tcp
+      timeout: 10s
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi

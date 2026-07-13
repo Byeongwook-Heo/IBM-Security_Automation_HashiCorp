@@ -1,0 +1,21 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: security-portal-backend
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: security-portal-backend
+    app.kubernetes.io/part-of: information-security-portal
+    optimization.security-lab/mode: recommendation-only
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: security-portal-backend
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        controlledResources: ["cpu", "memory"]
+        controlledValues: RequestsOnly

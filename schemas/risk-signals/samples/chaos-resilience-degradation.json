@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0",
+  "signal_id": "ars-chaos-20260706-0003",
+  "observed_at": "2026-07-06T12:20:00Z",
+  "ingested_at": "2026-07-06T12:21:44Z",
+  "source": {
+    "name": "chaos",
+    "type": "resilience",
+    "version": "lab-synthetic",
+    "run_id": "pod-kill-demo-payments-20260706"
+  },
+  "application": {
+    "id": "app-demo-payments",
+    "name": "demo-payments",
+    "environment": "lab",
+    "owner": "platform-sre",
+    "tier": "tier-1",
+    "cluster": "hc-security-lab-eks",
+    "namespace": "payments",
+    "service": "payments-api"
+  },
+  "resource": {
+    "kind": "kubernetes_deployment",
+    "name": "payments-api",
+    "namespace": "payments",
+    "labels": {
+      "app.kubernetes.io/name": "demo-payments",
+      "app.kubernetes.io/component": "api"
+    }
+  },
+  "finding": {
+    "id": "resilience.pod-kill.recovery-slo-missed",
+    "title": "Service missed recovery objective during pod termination test",
+    "description": "Synthetic chaos result showing degraded recovery after a controlled pod kill.",
+    "category": "resilience",
+    "severity": "medium",
+    "status": "open",
+    "control_id": "resilience-recovery-slo",
+    "last_success_at": "2026-07-05T12:20:00Z",
+    "recovery_point_age_hours": 24,
+    "evidence_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "risk": {
+    "score": 56,
+    "score_band": "high",
+    "formula_version": "ars-v1",
+    "impact": 0.55,
+    "likelihood": 0.6,
+    "exposure": 0.55,
+    "exploitability": 0.1,
+    "confidence": 0.75,
+    "business_criticality": 0.8,
+    "data_sensitivity": 0.5,
+    "environment_weight": 1,
+    "compensating_control_modifier": 1,
+    "application_risk_score_delta": 7,
+    "recommended_priority": "p2",
+    "reasons": [
+      "recovery objective missed",
+      "tier-1 service",
+      "recent resilience evidence"
+    ]
+  },
+  "evidence": {
+    "summary": "A synthetic pod-kill experiment exceeded the recovery objective for payments-api.",
+    "elastic_index": "risk-signals-application",
+    "elastic_document_id": "ars-chaos-20260706-0003",
+    "raw_ref": "s3://example-lab-evidence/chaos/demo-payments/2026-07-06/result.json"
+  },
+  "remediation": {
+    "action": "Review readiness probes, replica count, and disruption budget before the next resilience test.",
+    "owner": "platform-sre",
+    "status": "not_started",
+    "due_at": "2026-07-19T12:00:00Z",
+    "human_review_required": false
+  },
+  "tags": [
+    "phase-6",
+    "concert-replacement",
+    "resilience"
+  ],
+  "labels": {
+    "lab": "hashicorp-security-automation",
+    "experiment": "pod-kill"
+  },
+  "extensions": {
+    "steady_state_before": "healthy",
+    "steady_state_after": "degraded",
+    "observed_recovery_seconds": 420,
+    "target_recovery_seconds": 180
+  }
+}

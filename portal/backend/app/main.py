@@ -1,13 +1,114 @@
-from fastapi import FastAPI, Request, Depends
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import os
+from typing import Any, Callable
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+from fastapi import FastAPI, Request, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .auth import current_user, require_role
-from .models import CommonEvent, WorkflowRequest
+from .models import (
+    CommonEvent,
+    ObservabilityLink,
+    ObservabilityLinksResponse,
+    WorkflowRequest,
+)
 from .repository import repo
 from .qradar_sender import send_event
 from .enterprise import enterprise_status
+from .elastic_repository import (
+    ElasticRepository,
+    ElasticRepositoryError,
+    mask_sensitive_raw_event,
+)
 
 app = FastAPI(title="Information Security Portal")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("PORTAL_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+OBSERVABILITY_LINK_ENV = (
+    ("grafana", "Grafana", "GRAFANA_URL"),
+    ("loki", "Loki", "LOKI_URL"),
+    ("tempo", "Tempo", "TEMPO_URL"),
+    ("prometheus", "Prometheus", "PROMETHEUS_URL"),
+)
+SENSITIVE_URL_QUERY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential", "signature")
+
+
+def _elastic_repo() -> ElasticRepository | None:
+    elastic = ElasticRepository.from_env()
+    return elastic if elastic.configured else None
+
+
+def _safe_observability_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    if not candidate or any(ord(char) < 32 or ord(char) == 127 for char in candidate):
+        return None
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in parsed.netloc
+        or any(char.isspace() for char in parsed.netloc)
+    ):
+        return None
+    query_keys = (key.lower().replace("-", "_") for key, _ in parse_qsl(parsed.query, keep_blank_values=True))
+    if any(marker in key for key in query_keys for marker in SENSITIVE_URL_QUERY_MARKERS):
+        return None
+    return urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _elastic_list(fetch: Callable[[ElasticRepository], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    elastic = _elastic_repo()
+    if elastic is None:
+        return []
+    try:
+        return fetch(elastic)
+    except ElasticRepositoryError:
+        return []
+
+
+def _event_dict(event: CommonEvent) -> dict[str, Any]:
+    if hasattr(event, "model_dump"):
+        data = event.model_dump(mode="json")
+    else:
+        data = event.dict()
+    data["raw_event"] = mask_sensitive_raw_event(data.get("raw_event", {}))
+    return data
+
+
+def _event_sort_key(event: dict[str, Any]) -> datetime:
+    value = event.get("event_time") or event.get("@timestamp")
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 @app.middleware("http")
 async def audit_mutations(request: Request, call_next):
@@ -17,15 +118,52 @@ async def audit_mutations(request: Request, call_next):
     return response
 
 @app.get("/health")
-def health(): return {"status":"ok","mode":"mock"}
+def health(): return {"status":"ok","mode":"mock+elastic" if _elastic_repo() else "mock"}
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    data = summary()
+    values = {
+        "security_portal_security_score": data.get("security_score", 0),
+        "security_portal_open_offenses": data.get("open_offenses", 0),
+        "security_portal_critical_findings": data.get("critical_findings", 0),
+        "security_portal_exposed_secrets": data.get("exposed_secrets", 0),
+        "security_portal_db_audit_events": data.get("db_audit_events", 0),
+        "security_portal_vault_radar_findings": data.get("vault_radar_findings", 0),
+    }
+    body = "\n".join(f"{name} {float(value)}" for name, value in values.items()) + "\n"
+    return Response(content=body, media_type="text/plain; version=0.0.4")
 @app.get("/api/dashboard/summary")
-def summary(): return repo.summary()
+def summary():
+    data = repo.summary()
+    elastic = _elastic_repo()
+    if elastic is None:
+        return data
+    data["elastic_enabled"] = True
+    try:
+        counts = elastic.summary_counts()
+    except ElasticRepositoryError:
+        return data
+    data.update(counts)
+    data["kibana_url"] = getattr(elastic, "kibana_url", "") or None
+    data["critical_findings"] = max(repo.summary()["critical_findings"], counts["critical_findings"])
+    data["exposed_secrets"] = max(repo.summary()["exposed_secrets"], counts["vault_radar_findings"])
+    risk_fetcher = getattr(elastic, "application_risk_signals", None)
+    try:
+        live_risk_signals = risk_fetcher(limit=500) if risk_fetcher else []
+    except ElasticRepositoryError:
+        live_risk_signals = []
+    if live_risk_signals:
+        risk_summary = repo.application_risk_summary(live_risk_signals)
+        data["app_risk"] = risk_summary["score"]
+        data["critical_findings"] = max(data["critical_findings"], risk_summary["open_critical"])
+    return data
 @app.get("/api/soc/offenses")
 def offenses(): return repo.offenses
 @app.get("/api/soc/timeline/{case_id}")
 def timeline(case_id: str): return repo.timeline(case_id)
 @app.get("/api/findings")
-def findings(): return repo.findings
+def findings(limit: int = Query(50, ge=1, le=500)):
+    return repo.findings + _elastic_list(lambda elastic: elastic.vault_radar_findings(limit=limit))
 @app.get("/api/assets")
 def assets(): return repo.assets
 @app.get("/api/apps")
@@ -44,20 +182,114 @@ def kubecost(): return repo.kubecost
 def turbo(): return repo.turbo
 @app.get("/api/concert/risks")
 def concert(): return repo.concert
+@app.get("/api/application-risk/summary")
+def application_risk_summary():
+    live_signals = _elastic_list(lambda elastic: elastic.application_risk_signals(limit=500))
+    return repo.application_risk_summary(live_signals or None)
+@app.get("/api/application-risk/signals")
+def application_risk_signals():
+    live_signals = _elastic_list(lambda elastic: elastic.application_risk_signals(limit=500))
+    return live_signals or repo.risk_signals
+@app.get("/api/observability/targets")
+def observability_targets(): return repo.observability_targets
+@app.get("/api/observability/links", response_model=ObservabilityLinksResponse)
+def observability_links():
+    links = []
+    for link_id, name, environment_variable in OBSERVABILITY_LINK_ENV:
+        url = _safe_observability_url(os.getenv(environment_variable))
+        links.append(ObservabilityLink(id=link_id, name=name, configured=url is not None, url=url))
+    return ObservabilityLinksResponse(links=links)
+@app.get("/api/kubernetes/platform")
+def kubernetes_platform(): return repo.kubernetes_platform
+@app.get("/api/kubernetes/cost-summary")
+def kubernetes_cost_summary():
+    elastic = _elastic_repo()
+    if elastic is not None:
+        try:
+            live_summary = elastic.latest_opencost_summary(
+                cluster_name=os.getenv("EKS_CLUSTER_NAME", "ibm-hc-lab-test-eks")
+            )
+            if live_summary:
+                return live_summary
+        except ElasticRepositoryError:
+            pass
+    return repo.kubernetes_cost_summary()
+@app.get("/api/kubernetes/optimization-recommendations")
+def kubernetes_optimization_recommendations():
+    elastic = _elastic_repo()
+    if elastic is not None:
+        try:
+            live_summary = elastic.latest_opencost_summary(
+                cluster_name=os.getenv("EKS_CLUSTER_NAME", "ibm-hc-lab-test-eks")
+            )
+            if live_summary:
+                return []
+        except ElasticRepositoryError:
+            pass
+    return repo.kubernetes_optimization_recommendations()
+@app.get("/api/workflows/dry-run-actions")
+def dry_run_actions(): return repo.dry_run_actions
 @app.get("/api/audit/events")
-def audit_events(): return repo.audit_events
+def audit_events(limit: int = Query(50, ge=1, le=500)):
+    local_events = [_event_dict(event) for event in repo.audit_events]
+    elastic_events = _elastic_list(
+        lambda elastic: elastic.vault_audit_events(limit=limit) + elastic.db_audit_events(limit=limit)
+    )
+    return sorted(local_events + elastic_events, key=_event_sort_key, reverse=True)[:limit]
+@app.get("/api/elastic/events")
+def elastic_events(limit: int = Query(50, ge=1, le=500)):
+    return _elastic_list(lambda elastic: elastic.search_events(limit=limit))
+@app.get("/api/vault/audit-events")
+def vault_audit_events(limit: int = Query(50, ge=1, le=500)):
+    return _elastic_list(lambda elastic: elastic.vault_audit_events(limit=limit))
+@app.get("/api/db-audit/events")
+def db_audit_events(limit: int = Query(50, ge=1, le=500)):
+    return _elastic_list(lambda elastic: elastic.db_audit_events(limit=limit))
+@app.get("/api/elastic/filebeat-events")
+def filebeat_events(limit: int = Query(50, ge=1, le=500)):
+    return _elastic_list(lambda elastic: elastic.filebeat_events(limit=limit))
+@app.get("/api/vault-radar/findings")
+def vault_radar_findings(limit: int = Query(50, ge=1, le=500)):
+    return _elastic_list(lambda elastic: elastic.vault_radar_findings(limit=limit))
+@app.get("/api/vault-radar/sources")
+def vault_radar_sources(): return repo.vault_radar_sources
 @app.get("/api/enterprise/status")
 def enterprise(): return enterprise_status()
 @app.post("/api/workflows/cases")
 def create_case(req: WorkflowRequest, user=Depends(current_user)):
     require_role(user,["SOC_ADMIN","SECURITY_ANALYST"]); return {"case_id":"case-demo-1","status":"created","dry_run":req.dry_run}
 @app.post("/api/workflows/actions/revoke-credential")
-def revoke(req: WorkflowRequest, user=Depends(current_user)): return {"status":"placeholder","action":"revoke_credential","dry_run":req.dry_run}
+def revoke(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "DBA"])
+    return {"status":"placeholder","action":"revoke_credential","dry_run":req.dry_run}
 @app.post("/api/workflows/actions/terminate-session")
-def terminate(req: WorkflowRequest, user=Depends(current_user)): return {"status":"placeholder","action":"terminate_session","dry_run":req.dry_run}
+def terminate(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER"])
+    return {"status":"placeholder","action":"terminate_session","dry_run":req.dry_run}
 @app.post("/api/workflows/actions/approve-turbonomic-action")
-def approve(req: WorkflowRequest, user=Depends(current_user)): return {"status":"approval_recorded","auto_execute":False,"dry_run":req.dry_run}
+def approve(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "FINOPS"])
+    return {"status":"approval_recorded","auto_execute":False,"dry_run":req.dry_run}
 @app.post("/api/workflows/actions/send-qradar-event")
-def qradar(req: WorkflowRequest): return send_event(CommonEvent(source_product="SecurityPortal", event_type="workflow_event", severity="medium", action="send_qradar_event", risk_score=50), dry_run=req.dry_run)
+def qradar(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    try:
+        return send_event(
+            CommonEvent(source_product="SecurityPortal", event_type="workflow_event", severity="medium", action="send_qradar_event", risk_score=50),
+            host=os.getenv("QRADAR_SYSLOG_HOST"),
+            port=int(os.getenv("QRADAR_SYSLOG_PORT", "514")),
+            dry_run=req.dry_run,
+        )
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 @app.post("/api/workflows/actions/trigger-terraform-run")
-def tf(req: WorkflowRequest): return {"status":"placeholder","action":"trigger_terraform_run","human_review_required":True,"dry_run":req.dry_run}
+def tf(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "PLATFORM_ENGINEER"])
+    return {"status":"placeholder","action":"trigger_terraform_run","human_review_required":True,"dry_run":req.dry_run}
+@app.post("/api/workflows/actions/dry-run")
+def dry_run_workflow(req: WorkflowRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA", "FINOPS"])
+    try:
+        return repo.dry_run_action(req.action_id, req.target_id, req.engine, req.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,0 +1,177 @@
+set -eu
+umask 077
+
+export DEBIAN_FRONTEND=noninteractive
+REGION="__REGION__"
+GRAFANA_SECRET_ID="__GRAFANA_SECRET_ID__"
+INSTALL_DIR="/opt/observability-stack"
+ARTIFACT_PATH="/tmp/observability-runtime.tar.gz"
+SERVICE_NAME="observability-stack.service"
+COMPOSE_VERSION="2.40.3"
+STAGING_DIR="$(mktemp -d /tmp/observability-runtime.XXXXXX)"
+SECRET_RESPONSE_FILE="$(mktemp /tmp/grafana-secret.XXXXXX)"
+
+cleanup() {
+  exit_code=$?
+  trap - 0
+  unset GRAFANA_ADMIN_USER GRAFANA_ADMIN_PASSWORD
+  rm -rf "$STAGING_DIR"
+  rm -f "$SECRET_RESPONSE_FILE" "$ARTIFACT_PATH"
+  if [ "$exit_code" -ne 0 ] && [ -f "$INSTALL_DIR/docker-compose.yml" ] && command -v docker >/dev/null 2>&1; then
+    docker compose -f "$INSTALL_DIR/docker-compose.yml" ps >&2 2>/dev/null || true
+  fi
+  exit "$exit_code"
+}
+trap cleanup 0
+trap 'exit 1' 1 2 15
+
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+
+missing_packages=""
+command -v docker >/dev/null 2>&1 || missing_packages="$missing_packages docker.io"
+command -v curl >/dev/null 2>&1 || missing_packages="$missing_packages curl"
+command -v jq >/dev/null 2>&1 || missing_packages="$missing_packages jq"
+command -v aws >/dev/null 2>&1 || missing_packages="$missing_packages awscli"
+
+if [ -n "$missing_packages" ]; then
+  apt-get update -qq
+  # shellcheck disable=SC2086
+  apt-get install -y --no-install-recommends ca-certificates $missing_packages
+fi
+
+install_compose_plugin() {
+  architecture="$(uname -m)"
+  case "$architecture" in
+    x86_64|amd64)
+      compose_arch="x86_64"
+      compose_sha256="dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372"
+      ;;
+    aarch64|arm64)
+      compose_arch="aarch64"
+      compose_sha256="d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137"
+      ;;
+    *)
+      fail "Unsupported Docker Compose architecture: ${architecture:-unknown}"
+      ;;
+  esac
+
+  compose_download="$(mktemp /tmp/docker-compose.XXXXXX)"
+  curl -fsSL \
+    "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
+    -o "$compose_download"
+  printf '%s  %s\n' "$compose_sha256" "$compose_download" | sha256sum -c - >/dev/null
+  install -d -m 0755 /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins
+  install -m 0755 "$compose_download" /usr/local/lib/docker/cli-plugins/docker-compose
+  ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
+  rm -f "$compose_download"
+}
+
+compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//; s/-.*//' || true)"
+if [ -z "$compose_version" ] || [ "$(printf '%s\n' '2.20.0' "$compose_version" | sort -V | head -n 1)" != "2.20.0" ]; then
+  install_compose_plugin
+fi
+
+systemctl enable --now docker
+[ -s "$ARTIFACT_PATH" ] || fail "Observability runtime artifact is missing"
+
+if tar -tzf "$ARTIFACT_PATH" | grep -Eq '(^/)|(^|/)\.\.(/|$)'; then
+  fail "Observability runtime artifact contains an unsafe path"
+fi
+tar -xzf "$ARTIFACT_PATH" -C "$STAGING_DIR"
+if find "$STAGING_DIR" -type l -print -quit | grep -q .; then
+  fail "Observability runtime artifact must not contain symbolic links"
+fi
+
+for required_file in \
+  docker-compose.yml \
+  grafana/provisioning/datasources/datasources.yml \
+  loki/loki-config.yml \
+  otel-collector/config.yml \
+  prometheus/prometheus.yml \
+  systemd/observability-stack.service \
+  tempo/tempo.yml
+do
+  [ -f "$STAGING_DIR/$required_file" ] || fail "Artifact is missing $required_file"
+done
+
+install -d -m 0750 "$INSTALL_DIR" "$INSTALL_DIR/secrets"
+find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name secrets -exec rm -rf -- {} +
+cp -a "$STAGING_DIR/." "$INSTALL_DIR/"
+chown -R root:root "$INSTALL_DIR"
+chmod 0750 "$INSTALL_DIR" "$INSTALL_DIR/secrets"
+find "$INSTALL_DIR" -type f ! -path "$INSTALL_DIR/secrets/*" -exec chmod 0644 {} +
+
+aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$GRAFANA_SECRET_ID" \
+  --query SecretString \
+  --output text \
+  > "$SECRET_RESPONSE_FILE"
+
+if jq -e 'type == "object"' "$SECRET_RESPONSE_FILE" >/dev/null 2>&1; then
+  GRAFANA_ADMIN_USER="$(jq -er '(.username // .admin_user // .grafana_admin_user // "admin") | select(type == "string" and length > 0)' "$SECRET_RESPONSE_FILE")"
+  GRAFANA_ADMIN_PASSWORD="$(jq -er '(.password // .admin_password // .grafana_admin_password) | select(type == "string" and length > 0)' "$SECRET_RESPONSE_FILE")"
+elif jq -e 'type == "string"' "$SECRET_RESPONSE_FILE" >/dev/null 2>&1; then
+  GRAFANA_ADMIN_USER="admin"
+  GRAFANA_ADMIN_PASSWORD="$(jq -er 'select(length > 0)' "$SECRET_RESPONSE_FILE")"
+else
+  GRAFANA_ADMIN_USER="admin"
+  GRAFANA_ADMIN_PASSWORD="$(cat "$SECRET_RESPONSE_FILE")"
+fi
+
+[ -n "$GRAFANA_ADMIN_PASSWORD" ] || fail "Grafana admin password is missing from Secrets Manager"
+case "$GRAFANA_ADMIN_USER" in
+  ""|*[!A-Za-z0-9._@-]*) fail "Grafana admin username contains unsupported characters" ;;
+esac
+[ "${#GRAFANA_ADMIN_USER}" -le 128 ] || fail "Grafana admin username is too long"
+
+user_secret_tmp="$INSTALL_DIR/secrets/.grafana-admin-user.tmp"
+password_secret_tmp="$INSTALL_DIR/secrets/.grafana-admin-password.tmp"
+printf '%s' "$GRAFANA_ADMIN_USER" > "$user_secret_tmp"
+printf '%s' "$GRAFANA_ADMIN_PASSWORD" > "$password_secret_tmp"
+chown 472:0 "$user_secret_tmp" "$password_secret_tmp"
+chmod 0440 "$user_secret_tmp" "$password_secret_tmp"
+mv -f "$user_secret_tmp" "$INSTALL_DIR/secrets/grafana-admin-user"
+mv -f "$password_secret_tmp" "$INSTALL_DIR/secrets/grafana-admin-password"
+unset GRAFANA_ADMIN_USER GRAFANA_ADMIN_PASSWORD
+rm -f "$SECRET_RESPONSE_FILE"
+
+cd "$INSTALL_DIR"
+docker compose config --quiet
+docker compose pull
+docker compose run --rm --no-deps --entrypoint /bin/promtool prometheus check config /etc/prometheus/prometheus.yml
+docker compose run --rm --no-deps --entrypoint /usr/bin/loki loki -config.file=/etc/loki/loki-config.yml -verify-config=true
+docker compose run --rm --no-deps --entrypoint /tempo tempo -config.file=/etc/tempo/tempo.yml -config.verify=true
+docker compose run --rm --no-deps --entrypoint /otelcol-contrib otel-collector validate --config=/etc/otelcol-contrib/config.yml
+
+install -m 0644 "$INSTALL_DIR/systemd/observability-stack.service" "/etc/systemd/system/$SERVICE_NAME"
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" >/dev/null
+systemctl restart "$SERVICE_NAME"
+systemctl is-active --quiet "$SERVICE_NAME"
+
+wait_for_url() {
+  service_label="$1"
+  health_url="$2"
+  attempt=1
+  while [ "$attempt" -le 60 ]; do
+    if curl -fsS --max-time 3 "$health_url" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  fail "$service_label did not become healthy at $health_url"
+}
+
+wait_for_url "Prometheus" "http://127.0.0.1:9090/-/ready"
+wait_for_url "Grafana" "http://127.0.0.1:3000/api/health"
+wait_for_url "Loki" "http://127.0.0.1:3100/ready"
+wait_for_url "Tempo" "http://127.0.0.1:3200/ready"
+wait_for_url "OpenTelemetry Collector" "http://127.0.0.1:13133/"
+
+docker compose ps
+printf '%s\n' "Phase 4 observability stack is healthy"

@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "signal_id": "ars-vault-pki-20260706-0005",
+  "observed_at": "2026-07-06T12:18:00Z",
+  "ingested_at": "2026-07-06T12:19:21Z",
+  "source": {
+    "name": "vault-pki",
+    "type": "certificate",
+    "version": "enterprise",
+    "run_id": "vault-pki-demo-payments-20260706"
+  },
+  "application": {
+    "id": "app-demo-payments",
+    "name": "demo-payments",
+    "environment": "lab",
+    "owner": "platform-sre",
+    "tier": "tier-1",
+    "cluster": "hc-security-lab-eks",
+    "namespace": "payments",
+    "service": "payments-api"
+  },
+  "resource": {
+    "kind": "certificate",
+    "name": "payments-api.service.consul",
+    "namespace": "payments",
+    "labels": {
+      "issuer": "vault-pki",
+      "renewal": "managed"
+    }
+  },
+  "finding": {
+    "id": "vault-pki.cert.expiring-soon",
+    "title": "Service certificate is approaching renewal window",
+    "description": "Synthetic Vault PKI certificate signal for portal renewal workflow testing.",
+    "category": "certificate",
+    "severity": "high",
+    "status": "open",
+    "control_id": "certificate-expiry-window",
+    "evidence_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "risk": {
+    "score": 77,
+    "score_band": "critical",
+    "formula_version": "ars-v1",
+    "impact": 0.75,
+    "likelihood": 0.65,
+    "exposure": 0.7,
+    "exploitability": 0.25,
+    "confidence": 0.8,
+    "business_criticality": 0.8,
+    "data_sensitivity": 0.45,
+    "environment_weight": 1,
+    "compensating_control_modifier": 0,
+    "application_risk_score_delta": 10,
+    "recommended_priority": "p1",
+    "reasons": [
+      "certificate renewal window",
+      "tier-1 service",
+      "reviewed reissue workflow available"
+    ]
+  },
+  "evidence": {
+    "summary": "Vault PKI reported a synthetic service certificate renewal signal.",
+    "elastic_index": "risk-signals-application",
+    "elastic_document_id": "ars-vault-pki-20260706-0005",
+    "raw_ref": "vault://pki_int/cert/payments-api.service.consul"
+  },
+  "remediation": {
+    "action": "Run the Vault PKI reissue dry-run and confirm cert-manager renewal state before applying changes.",
+    "owner": "platform-sre",
+    "status": "not_started",
+    "due_at": "2026-07-10T12:00:00Z",
+    "human_review_required": true
+  },
+  "tags": [
+    "phase-6",
+    "concert-replacement",
+    "certificate"
+  ],
+  "labels": {
+    "lab": "hashicorp-security-automation",
+    "scanner": "vault-pki"
+  }
+}

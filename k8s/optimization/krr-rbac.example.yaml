@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: krr-readonly
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: krr-discovery-readonly
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: krr-discovery-readonly
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: krr-discovery-readonly
+subjects:
+  - kind: ServiceAccount
+    name: krr-readonly
+    namespace: security-lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: krr-workload-readonly
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "replicationcontrollers", "replicationcontrollers/scale"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources:
+      - daemonsets
+      - deployments
+      - deployments/scale
+      - replicasets
+      - replicasets/scale
+      - statefulsets
+      - statefulsets/scale
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: krr-workload-readonly
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: krr-workload-readonly
+subjects:
+  - kind: ServiceAccount
+    name: krr-readonly
+    namespace: security-lab

@@ -1,0 +1,75 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: security-dry-run-remediation
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: security-dry-run-remediation
+    app.kubernetes.io/part-of: information-security-portal
+spec:
+  entrypoint: dry-run
+  arguments:
+    parameters:
+      - name: action_id
+        value: image-cve-remediation-plan
+      - name: target_id
+        value: selected-context
+      - name: reason
+        value: portal dry-run
+  templates:
+    - name: dry-run
+      inputs:
+        parameters:
+          - name: action_id
+          - name: target_id
+          - name: reason
+      steps:
+        - - name: render-plan
+            template: render-plan
+            arguments:
+              parameters:
+                - name: action_id
+                  value: "{{inputs.parameters.action_id}}"
+                - name: target_id
+                  value: "{{inputs.parameters.target_id}}"
+                - name: reason
+                  value: "{{inputs.parameters.reason}}"
+        - - name: human-review-gate
+            template: human-review-gate
+            arguments:
+              parameters:
+                - name: action_id
+                  value: "{{inputs.parameters.action_id}}"
+    - name: render-plan
+      inputs:
+        parameters:
+          - name: action_id
+          - name: target_id
+          - name: reason
+      container:
+        image: alpine:3.20
+        env:
+          - name: ACTION_ID
+            value: "{{inputs.parameters.action_id}}"
+          - name: TARGET_ID
+            value: "{{inputs.parameters.target_id}}"
+          - name: REASON
+            value: "{{inputs.parameters.reason}}"
+        command:
+          - sh
+          - -c
+        args:
+          - |
+            set -eu
+            printf '%s\n' \
+              "dry_run=true" \
+              "action_id=${ACTION_ID}" \
+              "target_id=${TARGET_ID}" \
+              "reason=${REASON}" \
+              "remediation_execution=blocked"
+    - name: human-review-gate
+      inputs:
+        parameters:
+          - name: action_id
+      suspend:
+        duration: "30s"

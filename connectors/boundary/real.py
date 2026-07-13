@@ -1,11 +1,14 @@
-import os, httpx
-class RealBoundaryConnector:
+from connectors.common import ConnectorConfig, HttpApiConnector
+
+
+class RealBoundaryConnector(HttpApiConnector):
     def __init__(self):
-        self.base_url=os.getenv('BOUNDARY_BASE_URL','')
-        self.token=os.getenv('BOUNDARY_API_TOKEN','')
-    def collect(self):
-        if not self.base_url or not self.token:
-            raise RuntimeError('Missing endpoint/token environment variables')
-        # Skeleton only: add product-specific endpoint paths after lab provisioning.
-        with httpx.Client(timeout=10, headers={'Authorization':'Bearer '+self.token}) as client:
-            return client.get(self.base_url.rstrip('/') + '/api/placeholder').json()
+        super().__init__(
+            ConnectorConfig.from_env(
+                "BOUNDARY",
+                "boundary",
+                "/v1/sessions",
+                base_envs=("BOUNDARY_BASE_URL", "BOUNDARY_ADDR"),
+                token_envs=("BOUNDARY_API_TOKEN", "BOUNDARY_TOKEN"),
+            )
+        )

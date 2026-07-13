@@ -1,0 +1,16 @@
+aws_region = "ap-northeast-2"
+name_prefix = "ibm-hc-lab"
+
+# Use an existing EC2 key pair. The matching private key stays local.
+key_name = "Byeongwook"
+
+# Replace with your current public IP CIDR, for example ["203.0.113.10/32"].
+ssh_ingress_cidrs = []
+
+# Store the raw Vault Enterprise license in AWS Secrets Manager and pass only the ARN.
+vault_license_secret_arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:vault/dev/license-example"
+
+# Keep this on an approved image.
+ami_name      = "hc-security-base-ubuntu-2204-20260629151937"
+instance_type = "t3.large"
+vault_version = "2.0.3+ent"

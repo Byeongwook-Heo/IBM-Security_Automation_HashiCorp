@@ -1,11 +1,14 @@
-import os, httpx
-class RealTurbonomicConnector:
+from connectors.common import ConnectorConfig, HttpApiConnector
+
+
+class RealTurbonomicConnector(HttpApiConnector):
     def __init__(self):
-        self.base_url=os.getenv('TURBONOMIC_BASE_URL','')
-        self.token=os.getenv('TURBONOMIC_API_TOKEN','')
-    def collect(self):
-        if not self.base_url or not self.token:
-            raise RuntimeError('Missing endpoint/token environment variables')
-        # Skeleton only: add product-specific endpoint paths after lab provisioning.
-        with httpx.Client(timeout=10, headers={'Authorization':'Bearer '+self.token}) as client:
-            return client.get(self.base_url.rstrip('/') + '/api/placeholder').json()
+        super().__init__(
+            ConnectorConfig.from_env(
+                "TURBONOMIC",
+                "turbonomic",
+                "/api/v3/search?types=Action",
+                base_envs=("TURBONOMIC_BASE_URL", "TURBONOMIC_API_URL"),
+                token_envs=("TURBONOMIC_API_TOKEN", "TURBONOMIC_TOKEN"),
+            )
+        )

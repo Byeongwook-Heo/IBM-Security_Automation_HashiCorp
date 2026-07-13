@@ -1,0 +1,214 @@
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+REGION="__REGION__"
+ELASTIC_SECRET_ID="__ELASTIC_SECRET_ID__"
+PORTAL_PORT="__PORTAL_PORT__"
+INSTALL_DIR="/opt/security-portal"
+SECRET_FILE=""
+
+cleanup() {
+  if [ -n "$SECRET_FILE" ]; then
+    rm -f "$SECRET_FILE"
+  fi
+}
+trap cleanup EXIT
+
+apt-get update
+apt-get install -y docker.io jq curl ca-certificates
+
+if ! docker compose version >/dev/null 2>&1; then
+  if ! apt-get install -y docker-compose-v2; then
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+      aarch64|arm64) COMPOSE_ARCH="aarch64" ;;
+      x86_64|amd64) COMPOSE_ARCH="x86_64" ;;
+      *) echo "Unsupported Docker Compose architecture: ${ARCH:-unknown}" >&2; exit 1 ;;
+    esac
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$COMPOSE_ARCH" -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+    ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
+  fi
+fi
+
+systemctl enable --now docker
+mkdir -p "$INSTALL_DIR"
+rm -rf "$INSTALL_DIR"/*
+tar -xzf /tmp/security-portal-runtime.tar.gz -C "$INSTALL_DIR"
+
+SECRET_JSON="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$ELASTIC_SECRET_ID" --query SecretString --output text)"
+ELASTIC_USERNAME="$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_username // empty')"
+ELASTIC_PASSWORD="$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_password // empty')"
+FILEBEAT_API_KEY="$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_filebeat_ingest_api_key // empty')"
+FILEBEAT_READ_API_KEY="$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_filebeat_read_api_key // empty')"
+SECRET_CHANGED=false
+
+if [ -z "$ELASTIC_USERNAME" ] || [ -z "$ELASTIC_PASSWORD" ]; then
+  echo "Elastic bootstrap credentials are missing from Secrets Manager" >&2
+  exit 1
+fi
+
+elastic_ready=false
+for attempt in $(seq 1 60); do
+  if curl -fsS -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" http://127.0.0.1:9200/_cluster/health >/dev/null 2>&1; then
+    elastic_ready=true
+    break
+  fi
+  sleep 2
+done
+if [ "$elastic_ready" != "true" ]; then
+  echo "Elasticsearch did not become ready for Filebeat provisioning" >&2
+  exit 1
+fi
+
+filebeat_key_ready=false
+if [ -n "$FILEBEAT_API_KEY" ]; then
+  PRIVILEGE_RESPONSE="$(
+    curl -sS \
+      -H "Authorization: ApiKey $FILEBEAT_API_KEY" \
+      -H 'Content-Type: application/json' \
+      -X POST http://127.0.0.1:9200/_security/user/_has_privileges \
+      -d '{"cluster":["monitor"],"index":[{"names":["filebeat-security-lab-*"],"privileges":["auto_configure","create_doc","view_index_metadata"]}]}'
+  )"
+  if printf '%s' "$PRIVILEGE_RESPONSE" | jq -e '.has_all_requested == true' >/dev/null 2>&1; then
+    filebeat_key_ready=true
+  fi
+fi
+
+if [ "$filebeat_key_ready" != "true" ]; then
+  curl -fsS \
+    -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
+    -H 'Content-Type: application/json' \
+    -X DELETE http://127.0.0.1:9200/_security/api_key \
+    -d '{"name":"ibm-hc-lab-filebeat-ingest"}' \
+    >/dev/null
+  KEY_RESPONSE="$(
+    curl -fsS \
+      -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
+      -H 'Content-Type: application/json' \
+      -X POST http://127.0.0.1:9200/_security/api_key \
+      -d '{"name":"ibm-hc-lab-filebeat-ingest","role_descriptors":{"filebeat-ingest":{"cluster":["monitor"],"index":[{"names":["filebeat-security-lab-*"],"privileges":["auto_configure","create_doc","view_index_metadata"]}]}}}'
+  )"
+  FILEBEAT_API_KEY="$(printf '%s' "$KEY_RESPONSE" | jq -r '.encoded // empty')"
+  if [ -z "$FILEBEAT_API_KEY" ]; then
+    echo "Failed to create the Filebeat ingest API key" >&2
+    exit 1
+  fi
+
+  SECRET_JSON="$(printf '%s' "$SECRET_JSON" | jq --arg key "$FILEBEAT_API_KEY" '.elastic_filebeat_ingest_api_key = $key')"
+  SECRET_CHANGED=true
+fi
+
+filebeat_read_key_ready=false
+if [ -n "$FILEBEAT_READ_API_KEY" ]; then
+  PRIVILEGE_RESPONSE="$(
+    curl -sS \
+      -H "Authorization: ApiKey $FILEBEAT_READ_API_KEY" \
+      -H 'Content-Type: application/json' \
+      -X POST http://127.0.0.1:9200/_security/user/_has_privileges \
+      -d '{"index":[{"names":["filebeat-security-lab-*"],"privileges":["read","view_index_metadata"]}]}'
+  )"
+  if printf '%s' "$PRIVILEGE_RESPONSE" | jq -e '.has_all_requested == true' >/dev/null 2>&1; then
+    filebeat_read_key_ready=true
+  fi
+fi
+
+if [ "$filebeat_read_key_ready" != "true" ]; then
+  curl -fsS \
+    -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
+    -H 'Content-Type: application/json' \
+    -X DELETE http://127.0.0.1:9200/_security/api_key \
+    -d '{"name":"ibm-hc-lab-filebeat-read"}' \
+    >/dev/null
+  KEY_RESPONSE="$(
+    curl -fsS \
+      -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
+      -H 'Content-Type: application/json' \
+      -X POST http://127.0.0.1:9200/_security/api_key \
+      -d '{"name":"ibm-hc-lab-filebeat-read","role_descriptors":{"filebeat-read":{"cluster":[],"index":[{"names":["filebeat-security-lab-*"],"privileges":["read","view_index_metadata"]}]}}}'
+  )"
+  FILEBEAT_READ_API_KEY="$(printf '%s' "$KEY_RESPONSE" | jq -r '.encoded // empty')"
+  if [ -z "$FILEBEAT_READ_API_KEY" ]; then
+    echo "Failed to create the Filebeat read API key" >&2
+    exit 1
+  fi
+
+  SECRET_JSON="$(printf '%s' "$SECRET_JSON" | jq --arg key "$FILEBEAT_READ_API_KEY" '.elastic_filebeat_read_api_key = $key')"
+  SECRET_CHANGED=true
+fi
+
+if [ "$SECRET_CHANGED" = "true" ]; then
+  SECRET_FILE="$(mktemp)"
+  chmod 600 "$SECRET_FILE"
+  printf '%s' "$SECRET_JSON" > "$SECRET_FILE"
+  aws secretsmanager put-secret-value \
+    --region "$REGION" \
+    --secret-id "$ELASTIC_SECRET_ID" \
+    --secret-string "file://$SECRET_FILE" \
+    >/dev/null
+  rm -f "$SECRET_FILE"
+  SECRET_FILE=""
+fi
+
+{
+  printf 'ELASTIC_URL=%s\n' 'http://127.0.0.1:9200'
+  printf 'ELASTIC_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_read_api_key // empty')"
+  printf 'ELASTIC_VERIFY_TLS=%s\n' 'false'
+  printf 'ELASTIC_DS_VAULT_AUDIT=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.vault_audit // "logs-hashicorp_vault.audit-lab"')"
+  printf 'ELASTIC_DS_PGAUDIT=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.pgaudit // "logs-postgresql.pgaudit-lab"')"
+  printf 'ELASTIC_DS_VAULT_RADAR=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.vault_radar // "logs-hashicorp_vault_radar.findings-lab"')"
+  printf 'ELASTIC_DS_FILEBEAT=%s\n' 'filebeat-security-lab-*'
+  printf 'ELASTIC_FILEBEAT_READ_API_KEY=%s\n' "$FILEBEAT_READ_API_KEY"
+  printf 'ELASTIC_DS_OPENCOST=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.opencost // "metrics-opencost.summary-lab"')"
+  printf 'ELASTIC_OPENCOST_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_opencost_read_api_key // empty')"
+  printf 'ELASTIC_DS_APPLICATION_RISK=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.application_risk // "logs-security_application.risk-lab"')"
+  printf 'ELASTIC_APPLICATION_RISK_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_application_risk_read_api_key // empty')"
+  printf 'EKS_CLUSTER_NAME=%s\n' 'ibm-hc-lab-test-eks'
+  printf 'KIBANA_URL=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.kibana_url // empty')"
+  printf 'GRAFANA_URL=%s\n' '__GRAFANA_URL__'
+  printf 'PROMETHEUS_URL=%s\n' '__PROMETHEUS_URL__'
+  printf 'LOKI_URL=%s\n' '__LOKI_URL__'
+  printf 'TEMPO_URL=%s\n' '__TEMPO_URL__'
+  printf 'PORTAL_AUTH_MODE=%s\n' 'deny'
+} > "$INSTALL_DIR/backend.env"
+chmod 600 "$INSTALL_DIR/backend.env"
+
+{
+  printf 'ELASTIC_FILEBEAT_URL=%s\n' 'http://host.docker.internal:9200'
+  printf 'ELASTIC_FILEBEAT_API_KEY=%s\n' "$FILEBEAT_API_KEY"
+} > "$INSTALL_DIR/filebeat.env"
+chmod 600 "$INSTALL_DIR/filebeat.env"
+
+{
+  printf '%s\n' '[Unit]'
+  printf '%s\n' 'Description=Information Security Portal'
+  printf '%s\n' 'Requires=docker.service'
+  printf '%s\n' 'After=docker.service network-online.target elastic-siem.service'
+  printf '\n'
+  printf '%s\n' '[Service]'
+  printf '%s\n' 'Type=oneshot'
+  printf '%s\n' 'RemainAfterExit=yes'
+  printf 'WorkingDirectory=%s\n' "$INSTALL_DIR"
+  printf 'Environment=PORTAL_PORT=%s\n' "$PORTAL_PORT"
+  printf '%s\n' 'ExecStart=/usr/bin/docker compose up -d --build --force-recreate'
+  printf '%s\n' 'ExecStop=/usr/bin/docker compose down'
+  printf '%s\n' 'TimeoutStartSec=0'
+  printf '\n'
+  printf '%s\n' '[Install]'
+  printf '%s\n' 'WantedBy=multi-user.target'
+} > /etc/systemd/system/security-portal.service
+
+systemctl daemon-reload
+systemctl enable security-portal
+systemctl restart security-portal
+docker compose -f "$INSTALL_DIR/docker-compose.yml" ps
+for attempt in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:$PORTAL_PORT/health" >/dev/null \
+    && docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx filebeat; then
+    exit 0
+  fi
+  sleep 2
+done
+
+docker compose -f "$INSTALL_DIR/docker-compose.yml" logs --tail=120
+exit 1

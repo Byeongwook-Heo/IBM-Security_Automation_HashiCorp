@@ -1,5 +1,5 @@
 aws_region = "us-east-1"
-name_prefix = "ibm-hc-lab"
+name_prefix = "ibm-hc-prod-like"
 enable_modules = true
 # qradar_api_token = set via TF_VAR_qradar_api_token, never commit real values
 

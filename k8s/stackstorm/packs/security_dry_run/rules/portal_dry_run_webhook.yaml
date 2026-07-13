@@ -1,0 +1,16 @@
+---
+name: portal_dry_run_webhook
+pack: security_dry_run
+description: Accept portal dry-run requests and render a blocked remediation plan.
+enabled: false
+trigger:
+  type: core.st2.webhook
+  parameters:
+    url: security-dry-run
+criteria: {}
+action:
+  ref: security_dry_run.plan_remediation
+  parameters:
+    action_id: "{{trigger.body.action_id}}"
+    target_id: "{{trigger.body.target_id}}"
+    reason: "{{trigger.body.reason}}"

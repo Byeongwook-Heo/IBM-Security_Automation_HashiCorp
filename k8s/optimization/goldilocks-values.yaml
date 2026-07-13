@@ -1,0 +1,50 @@
+# Install only the VPA recommender. The updater and admission webhook stay disabled.
+vpa:
+  enabled: true
+  recommender:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 500Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+  updater:
+    enabled: false
+  admissionController:
+    enabled: false
+
+# Use the cluster Metrics API; do not create a second metrics-server implicitly.
+metrics-server:
+  enabled: false
+
+controller:
+  enabled: true
+  flags:
+    on-by-default: false
+  rbac:
+    create: true
+    enableArgoproj: false
+  resources:
+    requests:
+      cpu: 25m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10324
+    capabilities:
+      drop: ["ALL"]
+
+# Recommendations are exported by the collector CronJob and existing log pipeline.
+dashboard:
+  enabled: false

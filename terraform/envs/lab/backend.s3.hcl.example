@@ -1,0 +1,5 @@
+bucket       = "replace-with-dedicated-state-bucket"
+key          = "security-automation/lab/terraform.tfstate"
+region       = "ap-northeast-2"
+encrypt      = true
+use_lockfile = true

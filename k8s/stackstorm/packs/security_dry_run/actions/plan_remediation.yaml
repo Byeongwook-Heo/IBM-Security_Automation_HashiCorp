@@ -1,0 +1,19 @@
+---
+name: plan_remediation
+pack: security_dry_run
+description: Render a review-only remediation plan without executing changes.
+runner_type: python-script
+enabled: true
+entry_point: plan_remediation.py
+parameters:
+  action_id:
+    type: string
+    required: true
+  target_id:
+    type: string
+    required: false
+    default: selected-context
+  reason:
+    type: string
+    required: false
+    default: portal dry-run

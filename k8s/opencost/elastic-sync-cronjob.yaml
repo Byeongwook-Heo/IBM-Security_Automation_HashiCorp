@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opencost-elastic-sync-script
+  namespace: security-lab
+data:
+  sync.py: |
+    import datetime as dt
+    import json
+    import os
+    import ssl
+    import urllib.parse
+    import urllib.request
+
+
+    def required(name: str) -> str:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            raise SystemExit(f"{name} is required")
+        return value
+
+
+    opencost_url = required("OPENCOST_URL")
+    elastic_url = required("ELASTIC_URL").rstrip("/")
+    elastic_api_key = required("ELASTIC_API_KEY")
+    data_stream = required("ELASTIC_DATA_STREAM")
+    cluster_name = required("CLUSTER_NAME")
+    window = required("OPENCOST_WINDOW")
+
+    if not data_stream.startswith("metrics-opencost.summary-"):
+        raise SystemExit("ELASTIC_DATA_STREAM must start with metrics-opencost.summary-")
+
+    allocation_query = urllib.parse.urlencode({"window": window, "aggregate": "namespace"})
+    with urllib.request.urlopen(f"{opencost_url}?{allocation_query}", timeout=30) as response:
+        allocation = json.load(response)
+
+    groups = (allocation.get("data") or [{}])[0] or {}
+    namespaces = [value for value in groups.values() if isinstance(value, dict)]
+    window_cost = sum(float(item.get("totalCost") or 0) for item in namespaces)
+
+    if not window.endswith("m") or not window[:-1].isdigit() or int(window[:-1]) <= 0:
+        raise SystemExit("OPENCOST_WINDOW must be a positive whole-minute value")
+    minutes = int(window[:-1])
+    observed_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    observed_text = observed_at.isoformat().replace("+00:00", "Z")
+    event_id = f"opencost-summary-{cluster_name}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
+    document = {
+        "@timestamp": observed_text,
+        "event_id": event_id,
+        "source_product": "opencost",
+        "event_type": "kubernetes_cost_summary",
+        "severity": "info",
+        "provider": "OpenCost",
+        "mode": "live_eks_fargate",
+        "cluster_name": cluster_name,
+        "window": window,
+        "window_cost": window_cost,
+        "daily_cost": window_cost * (1440 / minutes),
+        "monthly_projection": window_cost * (43200 / minutes),
+        "potential_monthly_savings": 0,
+        "anomaly_count": 0,
+        "recommendation_count": 0,
+        "namespace_count": len(namespaces),
+        "last_observed_at": observed_text,
+    }
+
+    request = urllib.request.Request(
+        f"{elastic_url}/{data_stream}/_create/{urllib.parse.quote(event_id, safe='')}",
+        data=json.dumps(document, separators=(",", ":")).encode(),
+        method="PUT",
+        headers={
+            "Authorization": f"ApiKey {elastic_api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    verify_tls = os.environ.get("ELASTIC_VERIFY_TLS", "true").lower() == "true"
+    ssl_context = None if verify_tls else ssl._create_unverified_context()
+    with urllib.request.urlopen(request, timeout=30, context=ssl_context) as response:
+        result = json.load(response)
+
+    print(json.dumps({
+        "result": result.get("result"),
+        "cluster_name": cluster_name,
+        "namespace_count": len(namespaces),
+        "observed_at": observed_text,
+    }))
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: opencost-elastic-sync
+  namespace: security-lab
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: opencost-elastic-sync
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              image: public.ecr.aws/docker/library/python:3.13.5-alpine3.22
+              imagePullPolicy: IfNotPresent
+              command: ["python", "/opt/sync/sync.py"]
+              env:
+                - name: OPENCOST_URL
+                  value: http://opencost.security-lab.svc:9003/allocation/compute
+                - name: OPENCOST_WINDOW
+                  valueFrom:
+                    configMapKeyRef:
+                      name: opencost-elastic-sync-settings
+                      key: window
+                - name: ELASTIC_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: opencost-elastic-sync-settings
+                      key: elastic-url
+                - name: ELASTIC_DATA_STREAM
+                  valueFrom:
+                    configMapKeyRef:
+                      name: opencost-elastic-sync-settings
+                      key: data-stream
+                - name: ELASTIC_VERIFY_TLS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: opencost-elastic-sync-settings
+                      key: verify-tls
+                - name: CLUSTER_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      name: opencost-elastic-sync-settings
+                      key: cluster-name
+                - name: ELASTIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: opencost-elastic-ingest
+                      key: api-key
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 96Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/sync
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: opencost-elastic-sync-script

@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "signal_id": "ars-syft-20260706-0004",
+  "observed_at": "2026-07-06T12:15:00Z",
+  "ingested_at": "2026-07-06T12:16:02Z",
+  "source": {
+    "name": "syft",
+    "type": "sbom",
+    "version": "1.9.0",
+    "run_id": "syft-demo-payments-20260706"
+  },
+  "application": {
+    "id": "app-demo-payments",
+    "name": "demo-payments",
+    "environment": "lab",
+    "owner": "platform-security",
+    "tier": "tier-1",
+    "cluster": "hc-security-lab-eks",
+    "namespace": "payments",
+    "service": "payments-api",
+    "image": "registry.example.local/demo-payments:1.4.2"
+  },
+  "resource": {
+    "kind": "sbom_package",
+    "name": "glibc",
+    "namespace": "payments",
+    "labels": {
+      "package.type": "apk"
+    }
+  },
+  "finding": {
+    "id": "sbom.package.glibc.inventory",
+    "title": "SBOM inventory captured for runtime package",
+    "description": "Synthetic SBOM inventory signal used to track package drift and release evidence.",
+    "category": "sbom",
+    "severity": "low",
+    "status": "open",
+    "package": "glibc",
+    "installed_version": "2.35",
+    "evidence_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "risk": {
+    "score": 28,
+    "score_band": "medium",
+    "formula_version": "ars-v1",
+    "impact": 0.2,
+    "likelihood": 0.25,
+    "exposure": 0.3,
+    "exploitability": 0.05,
+    "confidence": 0.9,
+    "business_criticality": 0.8,
+    "data_sensitivity": 0.4,
+    "environment_weight": 1,
+    "compensating_control_modifier": 1,
+    "application_risk_score_delta": 3,
+    "recommended_priority": "p3",
+    "reasons": [
+      "package inventory present",
+      "release evidence tracked",
+      "used for drift comparison"
+    ]
+  },
+  "evidence": {
+    "summary": "Syft captured a synthetic package inventory signal for the demo-payments image.",
+    "elastic_index": "risk-signals-application",
+    "elastic_document_id": "ars-syft-20260706-0004",
+    "raw_ref": "s3://example-lab-evidence/syft/demo-payments/2026-07-06/sbom.spdx.json"
+  },
+  "remediation": {
+    "action": "Attach the SBOM to release evidence and compare package drift on the next build.",
+    "owner": "platform-security",
+    "status": "not_started",
+    "due_at": "2026-07-20T12:00:00Z",
+    "human_review_required": false
+  },
+  "tags": [
+    "phase-6",
+    "concert-replacement",
+    "sbom"
+  ],
+  "labels": {
+    "lab": "hashicorp-security-automation",
+    "scanner": "syft"
+  }
+}

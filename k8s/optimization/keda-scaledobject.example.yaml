@@ -1,0 +1,22 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: security-portal-worker-queue
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: security-portal-worker
+    app.kubernetes.io/part-of: information-security-portal
+spec:
+  scaleTargetRef:
+    name: security-portal-worker
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://security-prometheus-server.security-lab.svc.cluster.local:80
+        metricName: security_portal_pending_actions
+        threshold: "10"
+        query: sum(security_portal_pending_actions)

@@ -1,0 +1,6 @@
+---
+name: security_dry_run
+description: Review-only automation actions for the information security portal.
+version: 0.1.0
+author: security-lab
+email: security-lab@example.local

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee -a /var/log/tfe-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+REGION="${region}"
+TFE_HOSTNAME="${tfe_hostname}"
+TFE_IMAGE="images.releases.hashicorp.com/hashicorp/terraform-enterprise:${tfe_image_tag}"
+LICENSE_SECRET_ARN="${license_secret_arn}"
+ENCRYPTION_PASSWORD_SECRET_ARN="${encryption_password_secret_arn}"
+DB_SECRET_ARN="${db_secret_arn}"
+
+apt-get update
+apt-get install -y docker.io jq openssl ca-certificates curl unzip
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  aarch64|arm64)
+    AWSCLI_ARCH="aarch64"
+    COMPOSE_ARCH="aarch64"
+    ;;
+  x86_64|amd64)
+    AWSCLI_ARCH="x86_64"
+    COMPOSE_ARCH="x86_64"
+    ;;
+  *)
+    echo "Unsupported architecture for AWS CLI v2: $ARCH"
+    exit 1
+    ;;
+esac
+
+if ! docker compose version >/dev/null 2>&1; then
+  if ! apt-get install -y docker-compose-v2; then
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$COMPOSE_ARCH" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+    ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
+  fi
+fi
+docker compose version
+
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$AWSCLI_ARCH.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install --update
+ln -sf /usr/local/bin/aws /usr/bin/aws || true
+
+systemctl enable --now docker
+
+mkdir -p /etc/terraform-enterprise/certs
+chmod 700 /etc/terraform-enterprise
+
+aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$LICENSE_SECRET_ARN" \
+  --query SecretString \
+  --output text > /etc/terraform-enterprise/license.hclic
+chmod 600 /etc/terraform-enterprise/license.hclic
+
+TFE_ENCRYPTION_PASSWORD="$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$ENCRYPTION_PASSWORD_SECRET_ARN" \
+  --query SecretString \
+  --output text)"
+
+DB_SECRET_JSON="$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$DB_SECRET_ARN" \
+  --query SecretString \
+  --output text)"
+DB_PASSWORD="$(echo "$DB_SECRET_JSON" | jq -r '.password')"
+
+compose_yaml_string() {
+  printf '%s' "$1" | sed 's/\$/$$/g' | jq -Rs .
+}
+
+TFE_ENCRYPTION_PASSWORD_YAML="$(compose_yaml_string "$TFE_ENCRYPTION_PASSWORD")"
+DB_PASSWORD_YAML="$(compose_yaml_string "$DB_PASSWORD")"
+
+openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
+  -keyout /etc/terraform-enterprise/certs/key.pem \
+  -out /etc/terraform-enterprise/certs/cert.pem \
+  -subj "/CN=$TFE_HOSTNAME" \
+  -addext "subjectAltName=DNS:$TFE_HOSTNAME"
+cp /etc/terraform-enterprise/certs/cert.pem /etc/terraform-enterprise/certs/bundle.pem
+chmod 600 /etc/terraform-enterprise/certs/key.pem
+
+cat /etc/terraform-enterprise/license.hclic | docker login \
+  --username terraform \
+  --password-stdin \
+  images.releases.hashicorp.com
+
+cat > /etc/terraform-enterprise/docker-compose.yml <<EOF
+---
+name: terraform-enterprise
+services:
+  tfe:
+    image: $TFE_IMAGE
+    restart: unless-stopped
+    environment:
+      TFE_LICENSE_PATH: "/etc/terraform-enterprise/license.hclic"
+      TFE_HOSTNAME: "$TFE_HOSTNAME"
+      TFE_ENCRYPTION_PASSWORD: $TFE_ENCRYPTION_PASSWORD_YAML
+      TFE_OPERATIONAL_MODE: "external"
+      TFE_RUN_PIPELINE_DRIVER: "docker"
+      TFE_DISK_CACHE_VOLUME_NAME: "terraform-enterprise_terraform-enterprise-cache"
+      TFE_TLS_CERT_FILE: "/etc/ssl/private/terraform-enterprise/cert.pem"
+      TFE_TLS_KEY_FILE: "/etc/ssl/private/terraform-enterprise/key.pem"
+      TFE_TLS_CA_BUNDLE_FILE: "/etc/ssl/private/terraform-enterprise/bundle.pem"
+      TFE_TLS_ENFORCE: "false"
+      TFE_IACT_SUBNETS: "${vpc_cidr}"
+      TFE_DATABASE_USER: "${db_user}"
+      TFE_DATABASE_PASSWORD: $DB_PASSWORD_YAML
+      TFE_DATABASE_HOST: "${db_host}:5432"
+      TFE_DATABASE_NAME: "${db_name}"
+      TFE_DATABASE_PARAMETERS: "sslmode=require"
+      TFE_OBJECT_STORAGE_TYPE: "s3"
+      TFE_OBJECT_STORAGE_S3_USE_INSTANCE_PROFILE: "true"
+      TFE_OBJECT_STORAGE_S3_REGION: "$REGION"
+      TFE_OBJECT_STORAGE_S3_BUCKET: "${s3_bucket}"
+      TFE_OBJECT_STORAGE_S3_SERVER_SIDE_ENCRYPTION: "AES256"
+      TFE_RUN_PIPELINE_DOCKER_EXTRA_HOSTS: "$TFE_HOSTNAME:127.0.0.1"
+    cap_add:
+      - IPC_LOCK
+    read_only: true
+    tmpfs:
+      - /tmp:mode=01777
+      - /run
+      - /var/log/terraform-enterprise
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /run/docker.sock
+      - type: bind
+        source: /etc/terraform-enterprise/certs
+        target: /etc/ssl/private/terraform-enterprise
+      - type: bind
+        source: /etc/terraform-enterprise/license.hclic
+        target: /etc/terraform-enterprise/license.hclic
+        read_only: true
+      - type: volume
+        source: terraform-enterprise-cache
+        target: /var/cache/tfe-task-worker/terraform
+volumes:
+  terraform-enterprise-cache:
+EOF
+chmod 600 /etc/terraform-enterprise/docker-compose.yml
+
+cat > /usr/local/sbin/tfe-refresh-database-password <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+REGION="${region}"
+DB_SECRET_ARN="${db_secret_arn}"
+INSTALL_DIR="/etc/terraform-enterprise"
+
+DB_SECRET_JSON="$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$DB_SECRET_ARN" \
+  --query SecretString \
+  --output text)"
+DB_PASSWORD="$(printf '%s' "$DB_SECRET_JSON" | jq -er '.password')"
+DB_PASSWORD_YAML="$(printf '%s' "$DB_PASSWORD" | sed 's/\$/$$/g' | jq -Rs .)"
+override_tmp="$(mktemp "$INSTALL_DIR/docker-compose.override.yml.XXXXXX")"
+
+{
+  printf '%s\n' 'services:'
+  printf '%s\n' '  tfe:'
+  printf '%s\n' '    environment:'
+  printf '      TFE_DATABASE_PASSWORD: %s\n' "$DB_PASSWORD_YAML"
+} > "$override_tmp"
+
+if [[ -f "$INSTALL_DIR/docker-compose.override.yml" ]] && cmp -s "$override_tmp" "$INSTALL_DIR/docker-compose.override.yml"; then
+  rm -f "$override_tmp"
+else
+  install -m 0600 "$override_tmp" "$INSTALL_DIR/docker-compose.override.yml"
+  rm -f "$override_tmp"
+fi
+EOF
+chmod 700 /usr/local/sbin/tfe-refresh-database-password
+/usr/local/sbin/tfe-refresh-database-password
+
+cat > /etc/systemd/system/terraform-enterprise.service <<'EOF'
+[Unit]
+Description=Terraform Enterprise
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/terraform-enterprise
+ExecStartPre=/usr/local/sbin/tfe-refresh-database-password
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/terraform-enterprise-secret-refresh.service <<'EOF'
+[Unit]
+Description=Refresh Terraform Enterprise database password from Secrets Manager
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/etc/terraform-enterprise
+ExecStart=/usr/local/sbin/tfe-refresh-database-password
+ExecStart=/usr/bin/docker compose up -d
+EOF
+
+cat > /etc/systemd/system/terraform-enterprise-secret-refresh.timer <<'EOF'
+[Unit]
+Description=Periodically refresh Terraform Enterprise database credentials
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=5m
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now terraform-enterprise
+systemctl enable --now terraform-enterprise-secret-refresh.timer

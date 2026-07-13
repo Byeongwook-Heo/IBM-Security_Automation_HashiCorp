@@ -1,0 +1,80 @@
+server:
+  persistentVolume:
+    enabled: false
+  retention: 24h
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+alertmanager:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+kube-state-metrics:
+  enabled: true
+
+extraScrapeConfigs: |
+  - job_name: security-portal
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ec2-54-116-219-141.ap-northeast-2.compute.amazonaws.com:8080
+        labels:
+          product: security-portal
+          environment: lab
+  - job_name: security-platform-http-health
+    metrics_path: /probe
+    params:
+      module: [http_service]
+    static_configs:
+      - targets:
+          - http://security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200/v1/sys/health
+        labels:
+          product: vault
+      - targets:
+          - https://ibm-hc-lab-tfe-alb-327586627.ap-northeast-2.elb.amazonaws.com/_health_check
+        labels:
+          product: terraform-enterprise
+      - targets:
+          - http://hashicorp-lab-dev-keycloak-alb-1501591011.ap-northeast-2.elb.amazonaws.com/realms/master/.well-known/openid-configuration
+        labels:
+          product: keycloak
+      - targets:
+          - http://ec2-54-116-219-141.ap-northeast-2.compute.amazonaws.com:8080/health
+        labels:
+          product: security-portal
+      - targets:
+          - http://ec2-54-116-219-141.ap-northeast-2.compute.amazonaws.com:5601/api/status
+        labels:
+          product: elastic-kibana
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: security-blackbox-prometheus-blackbox-exporter.security-lab.svc.cluster.local:9115
+  - job_name: security-platform-tcp-health
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - ibm-hc-lab-data-security-lab.cx4i8kgqav98.ap-northeast-2.rds.amazonaws.com:5432
+        labels:
+          product: rds-postgresql
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: security-blackbox-prometheus-blackbox-exporter.security-lab.svc.cluster.local:9115

@@ -1,11 +1,14 @@
-import os, httpx
-class RealVerifyConnector:
+from connectors.common import ConnectorConfig, HttpApiConnector
+
+
+class RealVerifyConnector(HttpApiConnector):
     def __init__(self):
-        self.base_url=os.getenv('VERIFY_BASE_URL','')
-        self.token=os.getenv('VERIFY_API_TOKEN','')
-    def collect(self):
-        if not self.base_url or not self.token:
-            raise RuntimeError('Missing endpoint/token environment variables')
-        # Skeleton only: add product-specific endpoint paths after lab provisioning.
-        with httpx.Client(timeout=10, headers={'Authorization':'Bearer '+self.token}) as client:
-            return client.get(self.base_url.rstrip('/') + '/api/placeholder').json()
+        super().__init__(
+            ConnectorConfig.from_env(
+                "VERIFY",
+                "verify",
+                "/v1.0/diagnostics/events",
+                base_envs=("VERIFY_BASE_URL", "VERIFY_API_URL", "IBM_VERIFY_ISSUER_URL"),
+                token_envs=("VERIFY_API_TOKEN", "VERIFY_TOKEN", "IBM_VERIFY_ACCESS_TOKEN"),
+            )
+        )

@@ -1,11 +1,14 @@
-import os, httpx
-class RealAwsSecurityConnector:
+from connectors.common import ConnectorConfig, HttpApiConnector
+
+
+class RealAwsSecurityConnector(HttpApiConnector):
     def __init__(self):
-        self.base_url=os.getenv('AWS_SECURITY_BASE_URL','')
-        self.token=os.getenv('AWS_SECURITY_API_TOKEN','')
-    def collect(self):
-        if not self.base_url or not self.token:
-            raise RuntimeError('Missing endpoint/token environment variables')
-        # Skeleton only: add product-specific endpoint paths after lab provisioning.
-        with httpx.Client(timeout=10, headers={'Authorization':'Bearer '+self.token}) as client:
-            return client.get(self.base_url.rstrip('/') + '/api/placeholder').json()
+        super().__init__(
+            ConnectorConfig.from_env(
+                "AWS_SECURITY",
+                "aws-security",
+                "/securityhub/findings",
+                base_envs=("AWS_SECURITY_BASE_URL", "AWS_SECURITY_API_URL"),
+                token_envs=("AWS_SECURITY_API_TOKEN", "AWS_SECURITY_TOKEN"),
+            )
+        )

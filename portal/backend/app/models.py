@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 class CommonEvent(BaseModel):
@@ -38,5 +40,22 @@ class Entity(BaseModel):
 
 class WorkflowRequest(BaseModel):
     target_id: str | None = None
+    action_id: str | None = None
+    engine: str | None = None
     reason: str = "demo"
     dry_run: bool = True
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservabilityLink(BaseModel):
+    id: Literal["grafana", "loki", "tempo", "prometheus"]
+    name: str
+    configured: bool
+    url: str | None = None
+
+
+class ObservabilityLinksResponse(BaseModel):
+    purpose: Literal["navigation"] = "navigation"
+    health_evaluated: Literal[False] = False
+    freshness_evaluated: Literal[False] = False
+    links: list[ObservabilityLink]

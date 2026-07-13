@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+exec > >(tee -a /var/log/vault-cross-namespace-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+export VAULT_ADDR="http://127.0.0.1:8200"
+
+apt-get update
+apt-get install -y awscli ca-certificates curl jq openssh-server openssl unzip
+
+systemctl enable --now ssh || systemctl enable --now sshd || true
+
+if ! id ubuntu >/dev/null 2>&1; then
+  useradd -m -s /bin/bash ubuntu
+fi
+
+install -d -m 0700 /etc/vault.d
+install -d -m 0755 /opt/vault-cross-namespace
+install -d -m 0700 /var/lib/vault
+install -d -m 0700 /var/lib/vault/raft
+install -d -m 0755 /var/lib/vault-cross-namespace
+
+case "$(uname -m)" in
+  x86_64) vault_arch="amd64" ;;
+  aarch64|arm64) vault_arch="arm64" ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+curl -fsSL \
+  "https://releases.hashicorp.com/vault/${vault_version}/vault_${vault_version}_linux_$${vault_arch}.zip" \
+  -o /tmp/vault.zip
+unzip -o /tmp/vault.zip -d /usr/local/bin
+chmod 0755 /usr/local/bin/vault
+
+aws secretsmanager get-secret-value \
+  --region "${region}" \
+  --secret-id "${vault_license_secret_arn}" \
+  --query SecretString \
+  --output text > /etc/vault.d/vault.hclic
+chmod 0600 /etc/vault.d/vault.hclic
+
+cat > /etc/vault.d/vault.env <<EOF
+VAULT_ADDR=http://127.0.0.1:8200
+VAULT_LICENSE_PATH=/etc/vault.d/vault.hclic
+EOF
+chmod 0600 /etc/vault.d/vault.env
+
+cat > /etc/vault.d/vault.hcl <<'EOF'
+ui = true
+disable_mlock = true
+api_addr = "http://127.0.0.1:8200"
+cluster_addr = "http://127.0.0.1:8201"
+
+listener "tcp" {
+  address = "0.0.0.0:8200"
+  tls_disable = true
+}
+
+storage "raft" {
+  path = "/var/lib/vault/raft"
+  node_id = "vault-cross-namespace-test"
+}
+
+license_entitlement {
+  edition = "platform-standard"
+}
+EOF
+chmod 0600 /etc/vault.d/vault.hcl
+
+cat > /etc/systemd/system/vault-cross-namespace.service <<'EOF'
+[Unit]
+Description=Vault Enterprise cross-namespace test server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/vault.d/vault.env
+ExecStart=/usr/local/bin/vault server -config=/etc/vault.d/vault.hcl
+Restart=on-failure
+RestartSec=5
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now vault-cross-namespace
+
+for _ in $(seq 1 90); do
+  if vault status >/tmp/vault-status.txt 2>&1 || grep -q "Initialized" /tmp/vault-status.txt; then
+    break
+  fi
+  sleep 2
+done
+
+status_json="$(vault status -format=json 2>/dev/null || true)"
+if ! printf '%s' "$status_json" | jq -e '.initialized == true' >/dev/null 2>&1; then
+  vault operator init -key-shares=1 -key-threshold=1 -format=json > /etc/vault.d/init.json
+  chmod 0600 /etc/vault.d/init.json
+fi
+
+jq -r '.unseal_keys_b64[0]' /etc/vault.d/init.json > /etc/vault.d/unseal-key
+jq -r '.root_token' /etc/vault.d/init.json > /etc/vault.d/root-token
+chmod 0600 /etc/vault.d/unseal-key /etc/vault.d/root-token
+
+if (vault status -format=json 2>/dev/null || true) | jq -e '.sealed == true' >/dev/null; then
+  vault operator unseal "$(cat /etc/vault.d/unseal-key)" >/dev/null
+fi
+
+for _ in $(seq 1 60); do
+  if (VAULT_TOKEN="$(cat /etc/vault.d/root-token)" vault status -format=json 2>/dev/null || true) | jq -e '.initialized == true and .sealed == false' >/dev/null; then
+    break
+  fi
+  sleep 2
+done
+
+cat > /opt/vault-cross-namespace/run-test.sh <<'TEST'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN="$(cat /etc/vault.d/root-token)"
+
+base_dir="/opt/vault-cross-namespace"
+report_json="$base_dir/report.json"
+report_md="$base_dir/report.md"
+results_jsonl="$base_dir/results.jsonl"
+test_log="$base_dir/test.log"
+client_key="$base_dir/client_ed25519"
+
+: > "$results_jsonl"
+: > "$test_log"
+exec > >(tee -a "$test_log") 2>&1
+
+record() {
+  local name="$1"
+  local status="$2"
+  local detail="$${3:-}"
+  jq -n \
+    --arg name "$name" \
+    --arg status "$status" \
+    --arg detail "$detail" \
+    '{name: $name, status: $status, detail: $detail}' >> "$results_jsonl"
+}
+
+vault_ns() {
+  local namespace="$1"
+  shift
+  VAULT_NAMESPACE="$namespace" vault "$@"
+}
+
+login_userpass() {
+  local namespace="$1"
+  local username="$2"
+  local password="$3"
+  VAULT_NAMESPACE="$namespace" vault write -format=json "auth/userpass/login/$username" password="$password" | jq -r '.auth.client_token'
+}
+
+create_namespace() {
+  local namespace="$1"
+  vault namespace create "$namespace" >/dev/null 2>&1 || true
+}
+
+setup_namespace() {
+  local namespace="$1"
+  local lower
+  lower="$(printf '%s' "$namespace" | tr '[:upper:]' '[:lower:]')"
+
+  vault_ns "$namespace" auth enable userpass >/dev/null 2>&1 || true
+  vault_ns "$namespace" write "auth/userpass/users/user-$lower" password="pass-$namespace" >/dev/null
+
+  local accessor
+  accessor="$(vault_ns "$namespace" auth list -format=json | jq -r '."userpass/".accessor')"
+
+  local entity_id
+  entity_id="$(vault_ns "$namespace" write -format=json identity/entity name="entity-$namespace" | jq -r '.data.id')"
+  vault_ns "$namespace" write identity/entity-alias name="user-$lower" canonical_id="$entity_id" mount_accessor="$accessor" >/dev/null
+
+  vault_ns "$namespace" secrets enable -path=ssh-client-signer ssh >/dev/null 2>&1 || true
+  vault_ns "$namespace" write ssh-client-signer/config/ca generate_signing_key=true >/dev/null
+  vault_ns "$namespace" write ssh-client-signer/roles/client-role \
+    key_type="ca" \
+    allow_user_certificates=true \
+    allowed_users="*" \
+    default_user="ubuntu" \
+    ttl="30m" \
+    max_ttl="1h" >/dev/null
+
+  vault_ns "$namespace" policy write ssh-sign - >/dev/null <<'EOF'
+path "ssh-client-signer/sign/client-role" {
+  capabilities = ["update"]
+}
+
+path "ssh-client-signer/config/ca" {
+  capabilities = ["read"]
+}
+
+path "ssh-client-signer/public_key" {
+  capabilities = ["read"]
+}
+EOF
+
+  vault_ns "$namespace" write -format=json identity/group \
+    name="group-$namespace" \
+    type="internal" \
+    policies="ssh-sign" \
+    member_entity_ids="$entity_id" >/dev/null
+
+  printf '%s' "$entity_id"
+}
+
+create_cross_group() {
+  local source_namespace="$1"
+  local target_namespace="$2"
+  local source_entity_id="$3"
+
+  vault_ns "$target_namespace" write -format=json identity/group \
+    name="cross-$source_namespace-to-$target_namespace-ssh-ca" \
+    type="internal" \
+    policies="ssh-sign" \
+    member_entity_ids="$source_entity_id" >/dev/null
+}
+
+sign_with_cross_namespace_token() {
+  local source_namespace="$1"
+  local target_namespace="$2"
+  local token="$3"
+  local cert_file="$base_dir/$${source_namespace}-token-to-$${target_namespace}-ca-cert.pub"
+  local response_file="$base_dir/$${source_namespace}-token-to-$${target_namespace}-ca-response.json"
+
+  if ! VAULT_NAMESPACE="$target_namespace" VAULT_TOKEN="$token" \
+    vault write -format=json ssh-client-signer/sign/client-role \
+      public_key=@"$client_key.pub" \
+      valid_principals="ubuntu" \
+      ttl="15m" > "$response_file"; then
+    return 1
+  fi
+
+  if ! jq -e -r '.data.signed_key | rtrimstr("\n") | select(length > 0)' "$response_file" > "$cert_file"; then
+    return 1
+  fi
+  if ! ssh-keygen -Lf "$cert_file" > "$cert_file.inspect" 2>"$cert_file.inspect.err"; then
+    return 1
+  fi
+  printf '%s' "$cert_file"
+}
+
+trust_namespace_ca() {
+  local namespace="$1"
+  vault_ns "$namespace" read -field=public_key ssh-client-signer/config/ca > "/etc/ssh/trusted-user-ca-keys-$namespace.pem"
+  cp "/etc/ssh/trusted-user-ca-keys-$namespace.pem" /etc/ssh/trusted-user-ca-keys.pem
+  chmod 0644 /etc/ssh/trusted-user-ca-keys.pem
+
+  cat > /etc/ssh/sshd_config.d/99-vault-ca-test.conf <<'EOF'
+PubkeyAuthentication yes
+TrustedUserCAKeys /etc/ssh/trusted-user-ca-keys.pem
+EOF
+
+  systemctl restart ssh || systemctl restart sshd
+  sleep 2
+}
+
+ssh_with_cert() {
+  local cert_file="$1"
+  ssh \
+    -i "$client_key" \
+    -o CertificateFile="$cert_file" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PubkeyAcceptedAlgorithms=+ssh-rsa \
+    -o CASignatureAlgorithms=+ssh-rsa \
+    ubuntu@127.0.0.1 'echo ssh-ok'
+}
+
+ssh_error_detail() {
+  local err_file="$1"
+  if [[ -s "$err_file" ]]; then
+    tr '\n' ' ' <"$err_file" | cut -c1-220
+  else
+    echo "certificate was not issued"
+  fi
+}
+
+main() {
+  vault status
+  local version
+  version="$(vault version)"
+
+  vault write sys/config/group-policy-application group_policy_application_mode="any" >/dev/null
+  local mode
+  mode="$(vault read -format=json sys/config/group-policy-application | jq -r '.data.group_policy_application_mode')"
+  if [[ "$mode" == "any" ]]; then
+    record "group_policy_application_mode" "PASS" "mode=any"
+  else
+    record "group_policy_application_mode" "FAIL" "mode=$mode"
+  fi
+
+  create_namespace "A"
+  create_namespace "B"
+  create_namespace "C"
+  record "namespaces_created" "PASS" "A,B,C"
+
+  local entity_a entity_b entity_c
+  entity_a="$(setup_namespace "A")"
+  entity_b="$(setup_namespace "B")"
+  entity_c="$(setup_namespace "C")"
+  record "entities_and_local_groups_created" "PASS" "A=$entity_a B=$entity_b C=$entity_c"
+
+  create_cross_group "A" "B" "$entity_a"
+  create_cross_group "B" "C" "$entity_b"
+  create_cross_group "C" "A" "$entity_c"
+  record "cross_namespace_groups_created" "PASS" "A->B, B->C, C->A"
+
+  local token_a token_b token_c
+  token_a="$(login_userpass "A" "user-a" "pass-A")"
+  token_b="$(login_userpass "B" "user-b" "pass-B")"
+  token_c="$(login_userpass "C" "user-c" "pass-C")"
+  record "namespace_tokens_issued" "PASS" "userpass tokens for A,B,C"
+
+  rm -f "$client_key" "$client_key.pub"
+  ssh-keygen -q -t ed25519 -N "" -C "vault-cross-namespace-test" -f "$client_key"
+  chmod 0600 "$client_key"
+
+  local cert_a_to_b cert_b_to_c cert_c_to_a
+  if cert_a_to_b="$(sign_with_cross_namespace_token "A" "B" "$token_a")"; then
+    record "A_token_can_request_B_ssh_ca_signature" "PASS" "$cert_a_to_b"
+  else
+    record "A_token_can_request_B_ssh_ca_signature" "FAIL" "$(tr '\n' ' ' <"$base_dir/A-token-to-B-ca-response.json" 2>/dev/null | cut -c1-220)"
+  fi
+
+  if cert_b_to_c="$(sign_with_cross_namespace_token "B" "C" "$token_b")"; then
+    record "B_token_can_request_C_ssh_ca_signature" "PASS" "$cert_b_to_c"
+  else
+    record "B_token_can_request_C_ssh_ca_signature" "FAIL" "$(tr '\n' ' ' <"$base_dir/B-token-to-C-ca-response.json" 2>/dev/null | cut -c1-220)"
+  fi
+
+  if cert_c_to_a="$(sign_with_cross_namespace_token "C" "A" "$token_c")"; then
+    record "C_token_can_request_A_ssh_ca_signature" "PASS" "$cert_c_to_a"
+  else
+    record "C_token_can_request_A_ssh_ca_signature" "FAIL" "$(tr '\n' ' ' <"$base_dir/C-token-to-A-ca-response.json" 2>/dev/null | cut -c1-220)"
+  fi
+
+  if VAULT_NAMESPACE="C" VAULT_TOKEN="$token_a" \
+    vault write -format=json ssh-client-signer/sign/client-role \
+      public_key=@"$client_key.pub" \
+      valid_principals="ubuntu" \
+      ttl="15m" >/tmp/unexpected-a-to-c.json 2>/tmp/expected-a-to-c-deny.log; then
+    record "A_token_without_C_group_is_denied_by_C_ssh_ca" "FAIL" "unexpected signing success"
+  else
+    record "A_token_without_C_group_is_denied_by_C_ssh_ca" "PASS" "$(tr '\n' ' ' </tmp/expected-a-to-c-deny.log | cut -c1-220)"
+  fi
+
+  trust_namespace_ca "B"
+  if [[ -n "$cert_a_to_b" ]] && ssh_with_cert "$cert_a_to_b" >/tmp/ssh-a-to-b.out 2>/tmp/ssh-a-to-b.err; then
+    record "ssh_login_with_A_token_B_ca_cert_on_B_trusting_server" "PASS" "$(cat /tmp/ssh-a-to-b.out)"
+  else
+    record "ssh_login_with_A_token_B_ca_cert_on_B_trusting_server" "FAIL" "$(ssh_error_detail /tmp/ssh-a-to-b.err)"
+  fi
+
+  trust_namespace_ca "C"
+  if [[ -n "$cert_b_to_c" ]] && ssh_with_cert "$cert_b_to_c" >/tmp/ssh-b-to-c.out 2>/tmp/ssh-b-to-c.err; then
+    record "ssh_login_with_B_token_C_ca_cert_on_C_trusting_server" "PASS" "$(cat /tmp/ssh-b-to-c.out)"
+  else
+    record "ssh_login_with_B_token_C_ca_cert_on_C_trusting_server" "FAIL" "$(ssh_error_detail /tmp/ssh-b-to-c.err)"
+  fi
+
+  trust_namespace_ca "A"
+  if [[ -n "$cert_c_to_a" ]] && ssh_with_cert "$cert_c_to_a" >/tmp/ssh-c-to-a.out 2>/tmp/ssh-c-to-a.err; then
+    record "ssh_login_with_C_token_A_ca_cert_on_A_trusting_server" "PASS" "$(cat /tmp/ssh-c-to-a.out)"
+  else
+    record "ssh_login_with_C_token_A_ca_cert_on_A_trusting_server" "FAIL" "$(ssh_error_detail /tmp/ssh-c-to-a.err)"
+  fi
+
+  jq -s \
+    --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg vault_version "$version" \
+    --arg mode "$mode" \
+    '{
+      generated_at: $generated_at,
+      vault_version: $vault_version,
+      group_policy_application_mode: $mode,
+      namespaces: ["A", "B", "C"],
+      tests: .
+    }' "$results_jsonl" > "$report_json"
+
+  {
+    echo "# Vault Cross-Namespace SSH CA Test"
+    echo
+    echo "- generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "- vault_version: $version"
+    echo "- group_policy_application_mode: $mode"
+    echo "- namespaces: A, B, C"
+    echo
+    echo "## Results"
+    jq -r '.[] | "- " + .status + " " + .name + ": " + .detail' < <(jq -s '.' "$results_jsonl")
+  } > "$report_md"
+
+  touch "$base_dir/READY"
+}
+
+main "$@"
+TEST
+
+chmod 0755 /opt/vault-cross-namespace/run-test.sh
+/opt/vault-cross-namespace/run-test.sh

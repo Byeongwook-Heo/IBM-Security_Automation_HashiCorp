@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee -a /var/log/elastic-siem-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+REGION="${region}"
+CREDENTIALS_SECRET_ARN="${credentials_secret_arn}"
+INSTALL_DIR="/opt/elastic-siem"
+
+apt-get update
+apt-get install -y docker.io jq openssl ca-certificates curl unzip
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  aarch64|arm64)
+    AWSCLI_ARCH="aarch64"
+    COMPOSE_ARCH="aarch64"
+    ;;
+  x86_64|amd64)
+    AWSCLI_ARCH="x86_64"
+    COMPOSE_ARCH="x86_64"
+    ;;
+  *)
+    echo "Unsupported architecture for AWS CLI v2: $ARCH"
+    exit 1
+    ;;
+esac
+
+if ! docker compose version >/dev/null 2>&1; then
+  if ! apt-get install -y docker-compose-v2; then
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$COMPOSE_ARCH" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+    ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
+  fi
+fi
+docker compose version
+
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$AWSCLI_ARCH.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --update
+  ln -sf /usr/local/bin/aws /usr/bin/aws || true
+fi
+
+systemctl enable --now docker
+sysctl -w vm.max_map_count=262144
+cat > /etc/sysctl.d/99-elastic-siem.conf <<'EOF'
+vm.max_map_count=262144
+EOF
+
+mkdir -p "$INSTALL_DIR"
+chmod 700 "$INSTALL_DIR"
+
+ELASTIC_PASSWORD="$(openssl rand -hex 24)"
+KIBANA_SYSTEM_PASSWORD="$(openssl rand -hex 24)"
+KIBANA_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+IMDS_TOKEN="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+PUBLIC_HOSTNAME="$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-hostname || true)"
+PRIVATE_IPV4="$(curl -fsS -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4 || true)"
+ACCESS_HOST="$${PUBLIC_HOSTNAME:-$PRIVATE_IPV4}"
+ELASTICSEARCH_URL="http://127.0.0.1:${elasticsearch_port}"
+if [[ "${elasticsearch_external_access}" == "true" ]]; then
+  ELASTICSEARCH_URL="http://$ACCESS_HOST:${elasticsearch_port}"
+fi
+
+cat > "$INSTALL_DIR/.env" <<EOF
+ELASTIC_PASSWORD=$ELASTIC_PASSWORD
+KIBANA_SYSTEM_PASSWORD=$KIBANA_SYSTEM_PASSWORD
+KIBANA_ENCRYPTION_KEY=$KIBANA_ENCRYPTION_KEY
+EOF
+chmod 600 "$INSTALL_DIR/.env"
+
+aws secretsmanager put-secret-value \
+  --region "$REGION" \
+  --secret-id "$CREDENTIALS_SECRET_ARN" \
+  --secret-string "$(jq -n \
+    --arg elastic_username "elastic" \
+    --arg elastic_password "$ELASTIC_PASSWORD" \
+    --arg kibana_system_username "kibana_system" \
+    --arg kibana_system_password "$KIBANA_SYSTEM_PASSWORD" \
+    --arg kibana_url "http://$ACCESS_HOST:${kibana_port}" \
+    --arg elasticsearch_url "$ELASTICSEARCH_URL" \
+    '{elastic_username: $elastic_username, elastic_password: $elastic_password, kibana_system_username: $kibana_system_username, kibana_system_password: $kibana_system_password, kibana_url: $kibana_url, elasticsearch_url: $elasticsearch_url}')"
+
+cat > "$INSTALL_DIR/docker-compose.yml" <<'EOF'
+---
+name: elastic-siem
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${elastic_stack_version}
+    restart: unless-stopped
+    environment:
+      node.name: elasticsearch
+      cluster.name: elastic-siem-lab
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      ELASTIC_PASSWORD: "$${ELASTIC_PASSWORD}"
+      ES_JAVA_OPTS: "-Xms${elastic_heap_size} -Xmx${elastic_heap_size}"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    ports:
+      - "${elasticsearch_bind_address}:${elasticsearch_port}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${elastic_stack_version}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: "$${ELASTIC_PASSWORD}"
+      KIBANA_SYSTEM_PASSWORD: "$${KIBANA_SYSTEM_PASSWORD}"
+    command: >
+      bash -c '
+        until curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://elasticsearch:9200/_cluster/health >/dev/null; do sleep 5; done;
+        until curl -fsS -u elastic:$${ELASTIC_PASSWORD} -H "Content-Type: application/json" -X POST http://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"$${KIBANA_SYSTEM_PASSWORD}\"}" >/dev/null; do sleep 5; done;
+      '
+    restart: "no"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${elastic_stack_version}
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      SERVER_NAME: kibana
+      SERVER_HOST: "0.0.0.0"
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: "$${KIBANA_SYSTEM_PASSWORD}"
+      XPACK_SECURITY_ENCRYPTIONKEY: "$${KIBANA_ENCRYPTION_KEY}"
+      XPACK_REPORTING_ENCRYPTIONKEY: "$${KIBANA_ENCRYPTION_KEY}"
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: "$${KIBANA_ENCRYPTION_KEY}"
+    ports:
+      - "${kibana_port}:5601"
+    volumes:
+      - kibana-data:/usr/share/kibana/data
+
+volumes:
+  elasticsearch-data:
+  kibana-data:
+EOF
+chmod 600 "$INSTALL_DIR/docker-compose.yml"
+
+cat > /etc/systemd/system/elastic-siem.service <<EOF
+[Unit]
+Description=Elastic SIEM lab stack
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now elastic-siem

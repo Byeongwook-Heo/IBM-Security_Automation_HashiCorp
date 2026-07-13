@@ -1,0 +1,484 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/risk-signals/application-risk-signal.schema.json",
+  "title": "Application Risk Signal",
+  "description": "Normalized application risk event for open source Concert replacement inputs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "signal_id",
+    "observed_at",
+    "source",
+    "application",
+    "finding",
+    "risk"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "signal_id": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Unique event identifier. Prefer deterministic IDs when replaying scanner output."
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ingested_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "application": {
+      "$ref": "#/$defs/application"
+    },
+    "resource": {
+      "$ref": "#/$defs/resource"
+    },
+    "finding": {
+      "$ref": "#/$defs/finding"
+    },
+    "risk": {
+      "$ref": "#/$defs/risk"
+    },
+    "evidence": {
+      "$ref": "#/$defs/evidence"
+    },
+    "remediation": {
+      "$ref": "#/$defs/remediation"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "labels": {
+      "$ref": "#/$defs/stringMap"
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Tool-specific fields that should not become first-class schema fields yet.",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "trivy",
+            "grype",
+            "syft",
+            "semgrep",
+            "kube-bench",
+            "polaris",
+            "cert-manager",
+            "vault-pki",
+            "velero",
+            "chaos",
+            "resilience",
+            "collector",
+            "manual"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "vulnerability",
+            "sbom",
+            "sast",
+            "kubernetes-benchmark",
+            "kubernetes-policy",
+            "certificate",
+            "backup",
+            "resilience"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "report_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "environment"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "test",
+            "stage",
+            "prod",
+            "lab"
+          ]
+        },
+        "owner": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string"
+        },
+        "cluster": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "commit_sha": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "artifact": {
+          "type": "string"
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "uid": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "cloud_provider": {
+          "type": "string"
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "labels": {
+          "$ref": "#/$defs/stringMap"
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "category",
+        "severity",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "cve",
+            "sbom",
+            "code_security",
+            "kubernetes_posture",
+            "certificate",
+            "backup",
+            "resilience"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "accepted",
+            "fixed",
+            "false_positive"
+          ]
+        },
+        "cve_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "cwe_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "package": {
+          "type": "string"
+        },
+        "installed_version": {
+          "type": "string"
+        },
+        "fixed_version": {
+          "type": "string"
+        },
+        "file_path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "control_id": {
+          "type": "string"
+        },
+        "policy_id": {
+          "type": "string"
+        },
+        "expiration_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_success_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "recovery_point_age_hours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "evidence_hash": {
+          "type": "string"
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "score_band",
+        "formula_version",
+        "reasons"
+      ],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "score_band": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "formula_version": {
+          "type": "string"
+        },
+        "impact": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "likelihood": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exposure": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exploitability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "business_criticality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "data_sensitivity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "environment_weight": {
+          "type": "number"
+        },
+        "compensating_control_modifier": {
+          "type": "number"
+        },
+        "application_risk_score_delta": {
+          "type": "number"
+        },
+        "recommended_priority": {
+          "type": "string",
+          "enum": [
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "url"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        },
+        "elastic_index": {
+          "type": "string"
+        },
+        "elastic_document_id": {
+          "type": "string"
+        },
+        "kibana_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "raw_ref": {
+          "type": "string",
+          "description": "Pointer to retained raw evidence, not the raw sensitive payload itself."
+        }
+      }
+    },
+    "remediation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "blocked",
+            "complete",
+            "accepted"
+          ]
+        },
+        "due_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "runbook_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "human_review_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

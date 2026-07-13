@@ -1,0 +1,25 @@
+opencost:
+  exporter:
+    defaultClusterId: ibm-hc-lab-test-eks
+    extraEnv:
+      EMIT_KSM_V1_METRICS: "false"
+      EMIT_KSM_V1_METRICS_ONLY: "false"
+  prometheus:
+    internal:
+      enabled: true
+      serviceName: security-prometheus-server
+      namespaceName: security-lab
+      port: 80
+    external:
+      enabled: false
+  ui:
+    enabled: true
+
+service:
+  type: ClusterIP
+
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9003"
+
+fullnameOverride: opencost

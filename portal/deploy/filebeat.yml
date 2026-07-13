@@ -1,0 +1,34 @@
+filebeat.inputs:
+  - type: filestream
+    id: security-lab-docker-containers
+    enabled: true
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    parsers:
+      - container:
+          stream: all
+          format: docker
+    prospector.scanner.fingerprint.enabled: true
+    fields_under_root: true
+    fields:
+      environment: lab
+      source_product: filebeat
+      event.dataset: docker.container
+
+processors:
+  - add_host_metadata: ~
+  - add_fields:
+      target: observer
+      fields:
+        type: filebeat
+        product: Elastic
+
+output.elasticsearch:
+  hosts:
+    - "${ELASTIC_FILEBEAT_URL}"
+  api_key: "${ELASTIC_FILEBEAT_API_KEY}"
+  index: "filebeat-security-lab-%{+yyyy.MM.dd}"
+
+setup.ilm.enabled: false
+setup.template.enabled: false
+logging.level: info

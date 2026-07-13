@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "signal_id": "ars-semgrep-20260706-0002",
+  "observed_at": "2026-07-06T12:10:00Z",
+  "ingested_at": "2026-07-06T12:11:18Z",
+  "source": {
+    "name": "semgrep",
+    "type": "sast",
+    "version": "1.78.0",
+    "run_id": "semgrep-demo-payments-20260706"
+  },
+  "application": {
+    "id": "app-demo-payments",
+    "name": "demo-payments",
+    "environment": "lab",
+    "owner": "appsec",
+    "tier": "tier-1",
+    "service": "payments-api",
+    "repository": "https://github.example.local/security-lab/demo-payments",
+    "commit_sha": "a41d9f6f3ad22a5b71a21c1a2c1170f4e4b01aaa"
+  },
+  "resource": {
+    "kind": "source_file",
+    "name": "src/payments/token_handler.py",
+    "labels": {
+      "language": "python",
+      "component": "api"
+    }
+  },
+  "finding": {
+    "id": "semgrep.python.jwt.missing-expiration-check",
+    "title": "JWT validation does not enforce token expiration",
+    "description": "Synthetic Semgrep finding for a missing expiration validation branch.",
+    "category": "code_security",
+    "severity": "high",
+    "status": "open",
+    "cwe_ids": [
+      "CWE-613"
+    ],
+    "file_path": "src/payments/token_handler.py",
+    "line": 84,
+    "evidence_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "risk": {
+    "score": 71,
+    "score_band": "high",
+    "formula_version": "ars-v1",
+    "impact": 0.75,
+    "likelihood": 0.7,
+    "exposure": 0.65,
+    "exploitability": 0.55,
+    "confidence": 0.8,
+    "business_criticality": 0.8,
+    "data_sensitivity": 0.6,
+    "environment_weight": 1,
+    "compensating_control_modifier": 2,
+    "application_risk_score_delta": 9,
+    "recommended_priority": "p1",
+    "reasons": [
+      "high severity code finding",
+      "authentication path",
+      "owner-visible remediation available"
+    ]
+  },
+  "evidence": {
+    "summary": "Semgrep reported a synthetic high-risk JWT validation issue in the payment API.",
+    "elastic_index": "risk-signals-application",
+    "elastic_document_id": "ars-semgrep-20260706-0002",
+    "raw_ref": "s3://example-lab-evidence/semgrep/demo-payments/2026-07-06/report.sarif"
+  },
+  "remediation": {
+    "action": "Require expiration validation in JWT verification and add a regression test.",
+    "owner": "appsec",
+    "status": "not_started",
+    "due_at": "2026-07-12T12:00:00Z",
+    "human_review_required": false
+  },
+  "tags": [
+    "phase-6",
+    "concert-replacement",
+    "sast"
+  ],
+  "labels": {
+    "lab": "hashicorp-security-automation",
+    "scanner": "semgrep"
+  }
+}

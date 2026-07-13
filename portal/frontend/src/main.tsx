@@ -1,5 +1,2900 @@
-import React, {useEffect,useState} from 'react';import{createRoot}from'react-dom/client';import'./style.css';
-const API=import.meta.env.VITE_API_URL||'http://localhost:8000';
-function Section({title,endpoint}:{title:string,endpoint:string}){const[d,setD]=useState<any>();useEffect(()=>{fetch(API+endpoint).then(r=>r.json()).then(setD)},[endpoint]);return <section><h2>{title}</h2><pre>{JSON.stringify(d,null,2)}</pre></section>}
-function App(){return <main><h1>정보보안포탈</h1><p>QRadar, IBM Security, HashiCorp, AWS signals with mock mode and deep-link-ready data.</p><Section title="Executive Dashboard" endpoint="/api/dashboard/summary"/><Section title="SOC View" endpoint="/api/soc/offenses"/><Section title="Data Security View" endpoint="/api/data-assets"/><Section title="Identity & Access View" endpoint="/api/access/sessions"/><Section title="Application Risk View" endpoint="/api/concert/risks"/><Section title="FinOps & Optimization View" endpoint="/api/optimization/turbonomic"/><Section title="Workflow Center" endpoint="/api/findings"/><Section title="Audit Evidence View" endpoint="/api/audit/events"/><Section title="Enterprise License & Image Status" endpoint="/api/enterprise/status"/></main>}
-createRoot(document.getElementById('root')!).render(<App/>);
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import "./style.css";
+
+const API_BASE =
+  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
+
+type ApiKey =
+  | "summary"
+  | "elasticEvents"
+  | "vaultAuditEvents"
+  | "dbAuditEvents"
+  | "vaultRadarFindings"
+  | "vaultRadarSources"
+  | "enterpriseStatus"
+  | "applicationRiskSummary"
+  | "applicationRiskSignals"
+  | "observabilityTargets"
+  | "observabilityLinks"
+  | "kubernetesPlatform"
+  | "kubernetesCostSummary"
+  | "kubernetesOptimization"
+  | "dryRunActions";
+
+type EndpointState = {
+  key: ApiKey;
+  label: string;
+  path: string;
+  status: "ok" | "empty" | "error";
+  count: number;
+  error?: string;
+};
+
+type Summary = {
+  security_score: number;
+  open_offenses: number;
+  critical_findings: number;
+  exposed_secrets: number;
+  data_risk: number;
+  app_risk: number;
+  cost_risk: number;
+  pending_approvals: number;
+  elastic_events?: number;
+  vault_audit_events?: number;
+  db_audit_events?: number;
+  vault_radar_findings?: number;
+  elastic_enabled?: boolean;
+  kibana_url?: string;
+};
+
+type ApplicationRiskSummary = {
+  score: number;
+  scoreBand: string;
+  applicationCount: number;
+  signalCount: number;
+  openCritical: number;
+  sources: string[];
+  topApplications: string[];
+  lastObservedAt: string;
+};
+
+type RiskSignal = {
+  signalId: string;
+  observedAt: string;
+  sourceName: string;
+  sourceType: string;
+  applicationName: string;
+  owner: string;
+  environment: string;
+  resourceKind: string;
+  resourceName: string;
+  findingTitle: string;
+  category: string;
+  severity: string;
+  status: string;
+  riskScore: number;
+  scoreBand: string;
+  remediationAction: string;
+  humanReviewRequired: boolean;
+};
+
+type ObservabilityTarget = {
+  id: string;
+  name: string;
+  scrapeJob: string;
+  endpointType: string;
+  status: string;
+  signal: string;
+};
+
+type ObservabilityToolLink = {
+  id: "grafana" | "loki" | "tempo" | "prometheus";
+  name: string;
+  configured: boolean;
+  url: string;
+};
+
+type ObservabilityLinks = {
+  purpose: "navigation";
+  healthEvaluated: boolean;
+  freshnessEvaluated: boolean;
+  links: ObservabilityToolLink[];
+};
+
+type KubernetesComponent = {
+  name: string;
+  purpose: string;
+  status: string;
+};
+
+type KubernetesPlatform = {
+  mode: string;
+  status: string;
+  clusterName: string;
+  namespace: string;
+  creationScript: string;
+  deploymentScript: string;
+  computeMode: string;
+  components: KubernetesComponent[];
+};
+
+type KubernetesCostSummary = {
+  provider: string;
+  mode: string;
+  dailyCost: number;
+  monthlyProjection: number;
+  potentialMonthlySavings: number;
+  anomalyCount: number;
+  recommendationCount: number;
+  lastObservedAt: string;
+};
+
+type OptimizationRecommendation = {
+  id: string;
+  source: string;
+  namespace: string;
+  workload: string;
+  type: string;
+  severity: string;
+  current: string;
+  recommended: string;
+  monthlySavings: number;
+  status: string;
+  actionId: string;
+};
+
+type VaultRadarSource = {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  scope: string;
+  command: string;
+  lastVerifiedAt: string;
+};
+
+type DryRunAction = {
+  id: string;
+  title: string;
+  engine: string;
+  targetType: string;
+  status: string;
+  riskReduction: number;
+  steps: string[];
+};
+
+type DryRunResult = {
+  runId: string;
+  status: string;
+  dryRun: boolean;
+  engine: string;
+  workflowKind: string;
+  targetId: string;
+  reason: string;
+  executionBlocked: boolean;
+  humanReviewRequired: boolean;
+  plan: Array<{ order: number; name: string; mode: string; willExecute: boolean }>;
+};
+
+type DryRunTarget = {
+  targetId?: string;
+  reason?: string;
+};
+
+type Finding = {
+  id: string;
+  source: string;
+  type: string;
+  subType: string;
+  status: string;
+  severity: string;
+  secretPath: string;
+  line?: number;
+  riskScore: number;
+  eventTime: string;
+  deepLink?: string;
+  repository?: string;
+};
+
+type AuditEvent = {
+  id: string;
+  eventTime: string;
+  sourceProduct: string;
+  eventType: string;
+  severity: string;
+  user: string;
+  sourceIp: string;
+  environment: string;
+  sessionId: string;
+  requestId: string;
+  credentialId: string;
+  secretPath: string;
+  dbName: string;
+  tableName: string;
+  action: string;
+  result: string;
+  riskScore: number;
+  elasticIndex?: string;
+  deepLink?: string;
+};
+
+type EnterpriseProductStatus = {
+  edition?: string;
+  image_configured?: boolean;
+  license_configured?: boolean;
+  secret_values_redacted?: boolean;
+};
+
+type InvestigationStep = {
+  id: string;
+  time: string;
+  source: string;
+  title: string;
+  detail: string;
+  severity: string;
+  meta: string;
+};
+
+type DashboardData = {
+  summary: Summary;
+  findings: Finding[];
+  auditEvents: AuditEvent[];
+  vaultEvents: AuditEvent[];
+  dbEvents: AuditEvent[];
+  vaultRadarSources: VaultRadarSource[];
+  appRiskSummary: ApplicationRiskSummary;
+  riskSignals: RiskSignal[];
+  observabilityTargets: ObservabilityTarget[];
+  observabilityLinks: ObservabilityLinks;
+  kubernetesPlatform: KubernetesPlatform;
+  kubernetesCostSummary: KubernetesCostSummary;
+  optimizationRecommendations: OptimizationRecommendation[];
+  dryRunActions: DryRunAction[];
+  enterpriseStatus: Record<string, EnterpriseProductStatus>;
+  streamHealth: StreamHealth[];
+  investigation: InvestigationStep[];
+  endpointStates: EndpointState[];
+  isFallback: boolean;
+};
+
+type StreamHealth = {
+  name: string;
+  source: string;
+  count: number;
+  status: "receiving" | "quiet" | "mock" | "error";
+  freshness: string;
+};
+
+type LoadState =
+  | { status: "loading"; data: null; message: null }
+  | { status: "ready"; data: DashboardData; message: string | null };
+
+type IconName =
+  | "gauge"
+  | "radar"
+  | "key"
+  | "database"
+  | "stream"
+  | "search"
+  | "activity"
+  | "shield"
+  | "external"
+  | "user"
+  | "workflow"
+  | "package"
+  | "certificate"
+  | "cluster";
+
+const ENDPOINTS: Array<{ key: ApiKey; label: string; path: string }> = [
+  { key: "summary", label: "Summary", path: "/api/dashboard/summary" },
+  { key: "elasticEvents", label: "Elastic", path: "/api/elastic/events" },
+  { key: "vaultAuditEvents", label: "Vault audit", path: "/api/vault/audit-events" },
+  { key: "dbAuditEvents", label: "DB audit", path: "/api/db-audit/events" },
+  { key: "vaultRadarFindings", label: "Vault Radar", path: "/api/vault-radar/findings" },
+  { key: "vaultRadarSources", label: "Radar sources", path: "/api/vault-radar/sources" },
+  { key: "enterpriseStatus", label: "Enterprise", path: "/api/enterprise/status" },
+  { key: "applicationRiskSummary", label: "App risk", path: "/api/application-risk/summary" },
+  { key: "applicationRiskSignals", label: "Risk signals", path: "/api/application-risk/signals" },
+  { key: "observabilityTargets", label: "Observability", path: "/api/observability/targets" },
+  { key: "observabilityLinks", label: "Observability links", path: "/api/observability/links" },
+  { key: "kubernetesPlatform", label: "Kubernetes", path: "/api/kubernetes/platform" },
+  { key: "kubernetesCostSummary", label: "Cost", path: "/api/kubernetes/cost-summary" },
+  { key: "kubernetesOptimization", label: "Optimization", path: "/api/kubernetes/optimization-recommendations" },
+  { key: "dryRunActions", label: "Automation", path: "/api/workflows/dry-run-actions" },
+];
+
+const DEFAULT_SUMMARY: Summary = {
+  security_score: 64,
+  open_offenses: 1,
+  critical_findings: 1,
+  exposed_secrets: 1,
+  data_risk: 91,
+  app_risk: 82,
+  cost_risk: 76,
+  pending_approvals: 1,
+  elastic_events: 9,
+  vault_audit_events: 3,
+  db_audit_events: 3,
+  vault_radar_findings: 3,
+  elastic_enabled: false,
+};
+
+const DEFAULT_APP_RISK_SUMMARY: ApplicationRiskSummary = {
+  score: 82,
+  scoreBand: "critical",
+  applicationCount: 1,
+  signalCount: 4,
+  openCritical: 2,
+  sources: ["trivy", "semgrep", "syft", "vault-pki"],
+  topApplications: ["demo-payments"],
+  lastObservedAt: "2026-07-06T12:18:00Z",
+};
+
+const FALLBACK_RISK_SIGNALS: RiskSignal[] = [
+  {
+    signalId: "ars-trivy-20260706-0001",
+    observedAt: "2026-07-06T12:05:00Z",
+    sourceName: "trivy",
+    sourceType: "vulnerability",
+    applicationName: "demo-payments",
+    owner: "platform-security",
+    environment: "lab",
+    resourceKind: "container_image",
+    resourceName: "demo-payments:1.4.2",
+    findingTitle: "Critical OpenSSL vulnerability in runtime image",
+    category: "cve",
+    severity: "critical",
+    status: "open",
+    riskScore: 92,
+    scoreBand: "critical",
+    remediationAction: "Rebuild the image with the fixed package and redeploy after review.",
+    humanReviewRequired: true,
+  },
+  {
+    signalId: "ars-semgrep-20260706-0002",
+    observedAt: "2026-07-06T12:10:00Z",
+    sourceName: "semgrep",
+    sourceType: "sast",
+    applicationName: "demo-payments",
+    owner: "appsec",
+    environment: "lab",
+    resourceKind: "source_file",
+    resourceName: "src/payments/token_handler.py",
+    findingTitle: "JWT validation does not enforce token expiration",
+    category: "code_security",
+    severity: "high",
+    status: "open",
+    riskScore: 71,
+    scoreBand: "high",
+    remediationAction: "Require expiration validation and add a regression test.",
+    humanReviewRequired: false,
+  },
+  {
+    signalId: "ars-syft-20260706-0003",
+    observedAt: "2026-07-06T12:15:00Z",
+    sourceName: "syft",
+    sourceType: "sbom",
+    applicationName: "demo-payments",
+    owner: "platform-security",
+    environment: "lab",
+    resourceKind: "sbom_package",
+    resourceName: "glibc",
+    findingTitle: "SBOM inventory captured for runtime package",
+    category: "sbom",
+    severity: "low",
+    status: "open",
+    riskScore: 28,
+    scoreBand: "medium",
+    remediationAction: "Attach SBOM evidence to release record and track drift.",
+    humanReviewRequired: false,
+  },
+  {
+    signalId: "ars-vault-pki-20260706-0004",
+    observedAt: "2026-07-06T12:18:00Z",
+    sourceName: "vault-pki",
+    sourceType: "certificate",
+    applicationName: "demo-payments",
+    owner: "platform-sre",
+    environment: "lab",
+    resourceKind: "certificate",
+    resourceName: "payments-api.service.consul",
+    findingTitle: "Service certificate is approaching renewal window",
+    category: "certificate",
+    severity: "high",
+    status: "open",
+    riskScore: 77,
+    scoreBand: "critical",
+    remediationAction: "Dry-run Vault PKI reissue workflow and confirm cert-manager state.",
+    humanReviewRequired: true,
+  },
+];
+
+const FALLBACK_OBSERVABILITY_TARGETS: ObservabilityTarget[] = [
+  { id: "vault", name: "Vault", scrapeJob: "vault", endpointType: "metrics", status: "planned", signal: "vault_core_unsealed" },
+  { id: "tfe", name: "Terraform Enterprise", scrapeJob: "tfe", endpointType: "metrics", status: "planned", signal: "tfe_run_queue_depth" },
+  { id: "keycloak", name: "Keycloak", scrapeJob: "keycloak", endpointType: "metrics", status: "planned", signal: "keycloak_logins_total" },
+  { id: "portal", name: "Security Portal", scrapeJob: "security-portal", endpointType: "http", status: "ready", signal: "/health" },
+  { id: "rds", name: "RDS PostgreSQL", scrapeJob: "postgres-exporter", endpointType: "exporter", status: "planned", signal: "pg_up" },
+  { id: "elastic", name: "Elastic/Kibana", scrapeJob: "elastic", endpointType: "http", status: "ready", signal: "cluster health" },
+];
+
+const DEFAULT_OBSERVABILITY_LINKS: ObservabilityLinks = {
+  purpose: "navigation",
+  healthEvaluated: false,
+  freshnessEvaluated: false,
+  links: [
+    { id: "grafana", name: "Grafana", configured: false, url: "" },
+    { id: "loki", name: "Loki", configured: false, url: "" },
+    { id: "tempo", name: "Tempo", configured: false, url: "" },
+    { id: "prometheus", name: "Prometheus", configured: false, url: "" },
+  ],
+};
+
+const FALLBACK_KUBERNETES_PLATFORM: KubernetesPlatform = {
+  mode: "existing_or_test_eks",
+  status: "active_control_plane_no_compute",
+  clusterName: "ibm-hc-lab-test-eks",
+  namespace: "security-lab",
+  creationScript: "scripts/plan-or-apply-test-eks.sh",
+  deploymentScript: "scripts/deploy-k8s-security-platform-to-eks.sh",
+  computeMode: "control_plane_only_no_worker_nodes",
+  components: [
+    { name: "Prometheus scrape config", purpose: "observability target inventory", status: "applied" },
+    { name: "OpenCost", purpose: "cost allocation", status: "requires-compute" },
+    { name: "KRR", purpose: "resource recommendation", status: "prepared" },
+    { name: "Goldilocks", purpose: "VPA recommendation visibility", status: "requires-compute" },
+    { name: "Argo Workflows/Events", purpose: "reviewed workflow execution", status: "prepared" },
+    { name: "StackStorm", purpose: "event-driven automation", status: "prepared" },
+  ],
+};
+
+const FALLBACK_KUBERNETES_COST_SUMMARY: KubernetesCostSummary = {
+  provider: "OpenCost",
+  mode: "existing_kubernetes",
+  dailyCost: 420.5,
+  monthlyProjection: 12615,
+  potentialMonthlySavings: 1840,
+  anomalyCount: 1,
+  recommendationCount: 5,
+  lastObservedAt: "2026-07-06T12:24:00Z",
+};
+
+const FALLBACK_OPTIMIZATION_RECOMMENDATIONS: OptimizationRecommendation[] = [
+  {
+    id: "krr-payments-api-cpu",
+    source: "KRR",
+    namespace: "payments",
+    workload: "deployment/payments-api",
+    type: "rightsizing",
+    severity: "high",
+    current: "cpu 1500m / memory 2Gi",
+    recommended: "cpu 650m / memory 1Gi",
+    monthlySavings: 730,
+    status: "review",
+    actionId: "rightsizing-recommendation",
+  },
+  {
+    id: "opencost-payments-anomaly",
+    source: "OpenCost",
+    namespace: "payments",
+    workload: "namespace/payments",
+    type: "cost_anomaly",
+    severity: "high",
+    current: "daily cost 420.50",
+    recommended: "review top pod and service allocation",
+    monthlySavings: 480,
+    status: "review",
+    actionId: "rightsizing-recommendation",
+  },
+];
+
+const FALLBACK_DRY_RUN_ACTIONS: DryRunAction[] = [
+  {
+    id: "secret-to-vault-registration",
+    title: "Secret found -> Vault registration recommendation",
+    engine: "stackstorm",
+    targetType: "vault-radar-finding",
+    status: "ready",
+    riskReduction: 18,
+    steps: ["Correlate finding metadata", "Create reviewed Vault onboarding task", "Notify service owner"],
+  },
+  {
+    id: "vault-pki-reissue-plan",
+    title: "Certificate expiry -> Vault PKI reissue plan",
+    engine: "argo-workflows",
+    targetType: "application-risk-signal",
+    status: "ready",
+    riskReduction: 22,
+    steps: ["Validate certificate owner", "Render Vault PKI issue command", "Prepare renewal check"],
+  },
+];
+
+const FALLBACK_VAULT_RADAR_SOURCES: VaultRadarSource[] = [
+  {
+    id: "local-repository",
+    name: "Local Git repository",
+    type: "folder",
+    status: "ready",
+    scope: "Workspace source tree",
+    command: "scripts/run-vault-radar-folder-scan.sh",
+    lastVerifiedAt: "2026-07-06T12:00:00Z",
+  },
+  {
+    id: "aws-lab-inventory",
+    name: "AWS lab EC2/EKS inventory",
+    type: "folder-export",
+    status: "ready",
+    scope: "EC2 metadata, EC2 user-data, EKS clusters, nodegroups, addons",
+    command: "scripts/run-vault-radar-aws-lab-inventory-scan.sh",
+    lastVerifiedAt: "2026-07-07T00:00:00Z",
+  },
+  {
+    id: "aws-parameter-store",
+    name: "AWS Parameter Store",
+    type: "aws-parameter-store",
+    status: "optional",
+    scope: "String and StringList parameters",
+    command: "INCLUDE_PARAMETER_STORE=true scripts/run-vault-radar-aws-lab-inventory-scan.sh",
+    lastVerifiedAt: "",
+  },
+  {
+    id: "terraform-enterprise-variables",
+    name: "Terraform Enterprise variables",
+    type: "tfe-variables",
+    status: "prepared",
+    scope: "Non-sensitive TFE workspace and variable-set values",
+    command: "scripts/run-vault-radar-tfe-variables-scan.sh",
+    lastVerifiedAt: "",
+  },
+  {
+    id: "terraform-enterprise-s3",
+    name: "Terraform Enterprise object storage",
+    type: "aws-s3",
+    status: "prepared",
+    scope: "Approved S3 bucket objects",
+    command: "scripts/run-vault-radar-s3-scan.sh",
+    lastVerifiedAt: "",
+  },
+];
+
+const FALLBACK_FINDINGS: Finding[] = [
+  {
+    id: "vr-1",
+    source: "Vault Radar",
+    type: "secret_exposure",
+    subType: "terraform",
+    status: "open",
+    severity: "critical",
+    secretPath: "repo/terraform/envs/lab/main.tf",
+    line: 42,
+    riskScore: 95,
+    eventTime: "2026-07-04T00:02:12Z",
+    deepLink: "#vault-radar-findings",
+    repository: "platform-infra",
+  },
+  {
+    id: "vr-2",
+    source: "Vault Radar",
+    type: "database_credential",
+    subType: "env_file",
+    status: "open",
+    severity: "high",
+    secretPath: "apps/payments/.env",
+    line: 8,
+    riskScore: 88,
+    eventTime: "2026-07-04T00:05:41Z",
+    deepLink: "#vault-radar-findings",
+    repository: "payments-api",
+  },
+  {
+    id: "vr-3",
+    source: "Vault Radar",
+    type: "token_pattern",
+    subType: "notebook",
+    status: "review",
+    severity: "medium",
+    secretPath: "notebooks/customer-export.ipynb",
+    line: 19,
+    riskScore: 62,
+    eventTime: "2026-07-04T00:08:13Z",
+    deepLink: "#vault-radar-findings",
+    repository: "analytics-lab",
+  },
+];
+
+const FALLBACK_VAULT_EVENTS: AuditEvent[] = [
+  {
+    id: "vault-1",
+    eventTime: "2026-07-04T00:04:07Z",
+    sourceProduct: "Vault",
+    eventType: "database/creds/customer-readwrite",
+    severity: "high",
+    user: "dba@example.com",
+    sourceIp: "10.8.42.15",
+    environment: "lab",
+    sessionId: "sess-1001",
+    requestId: "req-vlt-9f21",
+    credentialId: "vlt-db-readwrite-19m",
+    secretPath: "database/creds/customer-readwrite",
+    dbName: "customer-aurora",
+    tableName: "customers.pii",
+    action: "dynamic_credential_issued",
+    result: "success",
+    riskScore: 86,
+    elasticIndex: "logs-vault-audit",
+    deepLink: "#stream-health",
+  },
+  {
+    id: "vault-2",
+    eventTime: "2026-07-04T00:04:53Z",
+    sourceProduct: "Vault",
+    eventType: "database/static-roles/customer-reader",
+    severity: "medium",
+    user: "svc-payments@example.com",
+    sourceIp: "10.8.42.18",
+    environment: "lab",
+    sessionId: "sess-1002",
+    requestId: "req-vlt-a841",
+    credentialId: "vlt-db-reader-44k",
+    secretPath: "database/creds/customer-reader",
+    dbName: "customer-aurora",
+    tableName: "orders.payment_events",
+    action: "credential_renewed",
+    result: "success",
+    riskScore: 54,
+    elasticIndex: "logs-vault-audit",
+    deepLink: "#stream-health",
+  },
+  {
+    id: "vault-3",
+    eventTime: "2026-07-04T00:09:28Z",
+    sourceProduct: "Vault",
+    eventType: "kv/data/platform",
+    severity: "low",
+    user: "platform-admin@example.com",
+    sourceIp: "10.8.42.21",
+    environment: "lab",
+    sessionId: "sess-1003",
+    requestId: "req-vlt-c299",
+    credentialId: "",
+    secretPath: "kv/data/platform",
+    dbName: "",
+    tableName: "",
+    action: "secret_metadata_read",
+    result: "success",
+    riskScore: 28,
+    elasticIndex: "logs-vault-audit",
+    deepLink: "#stream-health",
+  },
+];
+
+const FALLBACK_DB_EVENTS: AuditEvent[] = [
+  {
+    id: "pgaudit-1",
+    eventTime: "2026-07-04T00:06:31Z",
+    sourceProduct: "PostgreSQL pgAudit",
+    eventType: "SELECT",
+    severity: "critical",
+    user: "vlt-db-readwrite-19m",
+    sourceIp: "10.8.42.15",
+    environment: "lab",
+    sessionId: "sess-1001",
+    requestId: "req-pg-7001",
+    credentialId: "vlt-db-readwrite-19m",
+    secretPath: "database/creds/customer-readwrite",
+    dbName: "customer-aurora",
+    tableName: "customers.pii",
+    action: "select",
+    result: "success",
+    riskScore: 94,
+    elasticIndex: "logs-postgresql-pgaudit",
+    deepLink: "#stream-health",
+  },
+  {
+    id: "pgaudit-2",
+    eventTime: "2026-07-04T00:07:19Z",
+    sourceProduct: "PostgreSQL pgAudit",
+    eventType: "COPY",
+    severity: "high",
+    user: "vlt-db-readwrite-19m",
+    sourceIp: "10.8.42.15",
+    environment: "lab",
+    sessionId: "sess-1001",
+    requestId: "req-pg-7042",
+    credentialId: "vlt-db-readwrite-19m",
+    secretPath: "database/creds/customer-readwrite",
+    dbName: "customer-aurora",
+    tableName: "customers.pii",
+    action: "copy_to_stdout",
+    result: "blocked",
+    riskScore: 89,
+    elasticIndex: "logs-postgresql-pgaudit",
+    deepLink: "#stream-health",
+  },
+  {
+    id: "pgaudit-3",
+    eventTime: "2026-07-04T00:10:05Z",
+    sourceProduct: "PostgreSQL pgAudit",
+    eventType: "SELECT",
+    severity: "medium",
+    user: "svc-payments-reader",
+    sourceIp: "10.8.42.18",
+    environment: "lab",
+    sessionId: "sess-1002",
+    requestId: "req-pg-7110",
+    credentialId: "vlt-db-reader-44k",
+    secretPath: "database/creds/customer-reader",
+    dbName: "customer-aurora",
+    tableName: "orders.payment_events",
+    action: "select",
+    result: "success",
+    riskScore: 47,
+    elasticIndex: "logs-postgresql-pgaudit",
+    deepLink: "#stream-health",
+  },
+];
+
+const EMPTY_DASHBOARD: DashboardData = {
+  summary: DEFAULT_SUMMARY,
+  findings: FALLBACK_FINDINGS,
+  auditEvents: [...FALLBACK_VAULT_EVENTS, ...FALLBACK_DB_EVENTS],
+  vaultEvents: FALLBACK_VAULT_EVENTS,
+  dbEvents: FALLBACK_DB_EVENTS,
+  vaultRadarSources: FALLBACK_VAULT_RADAR_SOURCES,
+  appRiskSummary: DEFAULT_APP_RISK_SUMMARY,
+  riskSignals: FALLBACK_RISK_SIGNALS,
+  observabilityTargets: FALLBACK_OBSERVABILITY_TARGETS,
+  observabilityLinks: DEFAULT_OBSERVABILITY_LINKS,
+  kubernetesPlatform: FALLBACK_KUBERNETES_PLATFORM,
+  kubernetesCostSummary: FALLBACK_KUBERNETES_COST_SUMMARY,
+  optimizationRecommendations: FALLBACK_OPTIMIZATION_RECOMMENDATIONS,
+  dryRunActions: FALLBACK_DRY_RUN_ACTIONS,
+  enterpriseStatus: {},
+  streamHealth: [],
+  investigation: [],
+  endpointStates: [],
+  isFallback: true,
+};
+
+export function App() {
+  const [loadState, setLoadState] = useState<LoadState>({
+    status: "loading",
+    data: null,
+    message: null,
+  });
+  const [findingSearch, setFindingSearch] = useState("");
+  const [severityFilter, setSeverityFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditSourceFilter, setAuditSourceFilter] = useState("all");
+  const [selectedFindingId, setSelectedFindingId] = useState("");
+  const [selectedAuditId, setSelectedAuditId] = useState("");
+  const [selectedActionId, setSelectedActionId] = useState("");
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [dryRunError, setDryRunError] = useState("");
+  const [isRunningDryRun, setIsRunningDryRun] = useState(false);
+
+  useEffect(() => {
+    document.title = "Information Security Portal";
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+    const controller = new AbortController();
+
+    async function loadDashboard() {
+      const responses = await Promise.all(
+        ENDPOINTS.map(async (endpoint) => {
+          try {
+            const data = await fetchJson(endpoint.path, controller.signal);
+            return { endpoint, data, error: null };
+          } catch (error) {
+            return {
+              endpoint,
+              data: endpoint.key === "summary" ? null : [],
+              error: error instanceof Error ? error.message : "Request failed",
+            };
+          }
+        }),
+      );
+
+      if (!isActive) return;
+
+      const data = createDashboardData(responses);
+      const failed = responses.filter((response) => response.error);
+      const message =
+        failed.length > 0
+          ? `${failed.length} API ${failed.length === 1 ? "source" : "sources"} unavailable. Showing fallback telemetry where needed.`
+          : data.isFallback
+            ? "Live streams are quiet. Showing fallback telemetry."
+            : null;
+
+      setLoadState({ status: "ready", data, message });
+    }
+
+    loadDashboard();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
+  }, []);
+
+  const dashboard = loadState.data ?? EMPTY_DASHBOARD;
+  const severityOptions = useMemo(
+    () => createOptions(dashboard.findings.map((finding) => finding.severity)),
+    [dashboard.findings],
+  );
+  const sourceOptions = useMemo(
+    () => createOptions(dashboard.findings.map((finding) => finding.source)),
+    [dashboard.findings],
+  );
+  const auditSourceOptions = useMemo(
+    () => createOptions(dashboard.dbEvents.map((event) => event.sourceProduct)),
+    [dashboard.dbEvents],
+  );
+
+  const filteredFindings = useMemo(
+    () =>
+      dashboard.findings.filter((finding) => {
+        const matchesSearch = searchText(finding, findingSearch);
+        const matchesSeverity = severityFilter === "all" || finding.severity === severityFilter;
+        const matchesSource = sourceFilter === "all" || finding.source === sourceFilter;
+        return matchesSearch && matchesSeverity && matchesSource;
+      }),
+    [dashboard.findings, findingSearch, severityFilter, sourceFilter],
+  );
+
+  const filteredDbEvents = useMemo(
+    () =>
+      dashboard.dbEvents.filter((event) => {
+        const matchesSearch = searchText(event, auditSearch);
+        const matchesSource =
+          auditSourceFilter === "all" || event.sourceProduct === auditSourceFilter;
+        return matchesSearch && matchesSource;
+      }),
+    [auditSearch, auditSourceFilter, dashboard.dbEvents],
+  );
+
+  const selectedFinding =
+    filteredFindings.find((finding) => finding.id === selectedFindingId) ?? filteredFindings[0];
+  const selectedAuditEvent =
+    filteredDbEvents.find((event) => event.id === selectedAuditId) ?? filteredDbEvents[0];
+  const selectedAction =
+    dashboard.dryRunActions.find((action) => action.id === selectedActionId) ??
+    dashboard.dryRunActions[0];
+  const kibanaHref = dashboard.summary.kibana_url || "";
+
+  function defaultTargetIdForAction(action: DryRunAction): string {
+    if (action.targetType === "vault-radar-finding") {
+      return selectedFinding?.id || "selected-context";
+    }
+    if (action.targetType === "db-audit-event") {
+      return selectedAuditEvent?.id || "selected-context";
+    }
+    if (action.targetType === "application-risk-signal") {
+      return dashboard.riskSignals[0]?.signalId || "selected-context";
+    }
+    if (action.targetType === "kubernetes-workload") {
+      return dashboard.optimizationRecommendations[0]?.id || "selected-context";
+    }
+    return selectedFinding?.id || selectedAuditEvent?.id || "selected-context";
+  }
+
+  async function handleDryRun(action: DryRunAction, target: DryRunTarget = {}) {
+    setSelectedActionId(action.id);
+    setIsRunningDryRun(true);
+    setDryRunError("");
+    const targetId = target.targetId || defaultTargetIdForAction(action);
+
+    try {
+      const result = await postDryRun({
+        actionId: action.id,
+        engine: action.engine,
+        targetId,
+        reason: target.reason || "portal dry-run",
+      });
+      setDryRunResult(result);
+    } catch (error) {
+      setDryRunError(error instanceof Error ? error.message : "Dry-run request failed");
+    } finally {
+      setIsRunningDryRun(false);
+    }
+  }
+
+  if (loadState.status === "loading") {
+    return (
+      <Shell dashboard={dashboard} kibanaHref="#stream-health">
+        <section className="state-panel" aria-live="polite">
+          <div className="spinner" aria-hidden="true" />
+          <h1>Loading telemetry</h1>
+          <p>Preparing the security workspace.</p>
+        </section>
+      </Shell>
+    );
+  }
+
+  return (
+    <Shell dashboard={dashboard} kibanaHref={kibanaHref}>
+      {loadState.message ? (
+        <div className="notice" role="status">
+          <span className="status-dot status-dot--warning" aria-hidden="true" />
+          <span>{loadState.message}</span>
+          <button className="text-button" type="button" onClick={() => window.location.reload()}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      <section className="summary-grid" aria-label="Security summary">
+        <RiskCard
+          icon="shield"
+          label="Security score"
+          value={`${dashboard.summary.security_score}`}
+          trend="Risk posture"
+          severity={scoreSeverity(100 - dashboard.summary.security_score)}
+        />
+        <RiskCard
+          icon="radar"
+          label="Critical findings"
+          value={`${dashboard.summary.critical_findings}`}
+          trend={`${dashboard.summary.exposed_secrets} exposed secrets`}
+          severity="critical"
+        />
+        <RiskCard
+          icon="database"
+          label="Data risk"
+          value={`${dashboard.summary.data_risk}`}
+          trend={`${dashboard.summary.db_audit_events ?? dashboard.dbEvents.length} DB audit events`}
+          severity={scoreSeverity(dashboard.summary.data_risk)}
+        />
+        <RiskCard
+          icon="activity"
+          label="Open offenses"
+          value={`${dashboard.summary.open_offenses}`}
+          trend={`${dashboard.summary.pending_approvals} pending approvals`}
+          severity={dashboard.summary.open_offenses > 0 ? "high" : "low"}
+        />
+        <RiskCard
+          icon="package"
+          label="Application risk"
+          value={`${dashboard.appRiskSummary.score}`}
+          trend={`${dashboard.appRiskSummary.signalCount} scanner signals`}
+          severity={dashboard.appRiskSummary.scoreBand}
+        />
+      </section>
+
+      <section className="investigation-panel" id="vault" aria-labelledby="investigation-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="investigation-title">Secret -&gt; Vault Credential -&gt; DB Audit</h2>
+            <p>Case timeline</p>
+          </div>
+          <span className="compact-meta">{dashboard.investigation.length} linked events</span>
+        </div>
+        <InvestigationTimeline steps={dashboard.investigation} />
+      </section>
+
+      <div className="work-grid" id="data-security">
+        <section className="data-panel" id="vault-radar-findings" aria-labelledby="findings-title">
+          <div className="section-heading section-heading--controls">
+            <div>
+              <h2 id="findings-title">Vault Radar findings</h2>
+              <p>{filteredFindings.length} visible findings</p>
+            </div>
+            <div className="control-row" role="search">
+              <SearchBox
+                label="Search findings"
+                value={findingSearch}
+                onChange={setFindingSearch}
+              />
+              <FilterSelect
+                label="Severity"
+                value={severityFilter}
+                options={severityOptions}
+                onChange={setSeverityFilter}
+              />
+              <FilterSelect
+                label="Source"
+                value={sourceFilter}
+                options={sourceOptions}
+                onChange={setSourceFilter}
+              />
+            </div>
+          </div>
+          <FindingsTable
+            findings={filteredFindings}
+            selectedId={selectedFinding?.id ?? ""}
+            onSelect={setSelectedFindingId}
+          />
+        </section>
+
+        <SelectionPanel finding={selectedFinding} event={selectedAuditEvent} />
+
+        <section className="data-panel data-panel--wide" id="audit" aria-labelledby="db-audit-title">
+          <div className="section-heading section-heading--controls">
+            <div>
+              <h2 id="db-audit-title">DB Audit Activity</h2>
+              <p>{filteredDbEvents.length} visible pgAudit rows</p>
+            </div>
+            <div className="control-row" role="search">
+              <SearchBox label="Search DB audit" value={auditSearch} onChange={setAuditSearch} />
+              <FilterSelect
+                label="Source"
+                value={auditSourceFilter}
+                options={auditSourceOptions}
+                onChange={setAuditSourceFilter}
+              />
+            </div>
+          </div>
+          <DbAuditTable
+            events={filteredDbEvents}
+            selectedId={selectedAuditEvent?.id ?? ""}
+            onSelect={setSelectedAuditId}
+          />
+        </section>
+      </div>
+
+      <section className="vault-radar-sources-panel" id="vault-radar-sources" aria-labelledby="vault-radar-sources-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="vault-radar-sources-title">Vault Radar Scan Sources</h2>
+            <p>Git, TFE, S3, AWS Parameter Store, and EC2/EKS inventory targets</p>
+          </div>
+          <span className="compact-meta">{dashboard.vaultRadarSources.length} sources</span>
+        </div>
+        <VaultRadarSourcesPanel sources={dashboard.vaultRadarSources} />
+      </section>
+
+      <section className="risk-signals-panel" id="application-risk" aria-labelledby="application-risk-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="application-risk-title">Application Risk Score</h2>
+            <p>Trivy, Semgrep, Syft, and Vault PKI signals</p>
+          </div>
+          <span className={`severity-pill severity-pill--${dashboard.appRiskSummary.scoreBand}`}>
+            {dashboard.appRiskSummary.score} / 100
+          </span>
+        </div>
+        <ApplicationRiskPanel summary={dashboard.appRiskSummary} signals={dashboard.riskSignals} />
+      </section>
+
+      <section className="automation-panel" id="automation" aria-labelledby="automation-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="automation-title">Dry-run Automation</h2>
+            <p>Argo Workflows/Events and StackStorm review actions</p>
+          </div>
+          <span className="compact-meta">{dashboard.dryRunActions.length} actions</span>
+        </div>
+        <AutomationPanel
+          actions={dashboard.dryRunActions}
+          selectedActionId={selectedAction?.id ?? ""}
+          isRunning={isRunningDryRun}
+          result={dryRunResult}
+          error={dryRunError}
+          onRun={handleDryRun}
+        />
+      </section>
+
+      <section className="observability-panel" id="observability" aria-labelledby="observability-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="observability-title">Observability Targets</h2>
+            <p>Collection signals and console navigation for the lab services</p>
+          </div>
+          <span className="compact-meta">{labelize(dashboard.kubernetesPlatform.mode)}</span>
+        </div>
+        <ObservabilityPanel
+          targets={dashboard.observabilityTargets}
+          links={dashboard.observabilityLinks}
+          platform={dashboard.kubernetesPlatform}
+        />
+      </section>
+
+      <section className="optimization-panel" id="kubernetes-optimization" aria-labelledby="optimization-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="optimization-title">Kubernetes Optimization</h2>
+            <p>OpenCost, KRR, Goldilocks, VPA/HPA, Karpenter, and KEDA signals</p>
+          </div>
+          <span className="compact-meta">
+            {formatMoney(dashboard.kubernetesCostSummary.potentialMonthlySavings)} potential savings
+          </span>
+        </div>
+        <KubernetesOptimizationPanel
+          summary={dashboard.kubernetesCostSummary}
+          recommendations={dashboard.optimizationRecommendations}
+          onRunRecommendation={(recommendation) => {
+            const action = dashboard.dryRunActions.find((item) => item.id === recommendation.actionId);
+            if (action) {
+              void handleDryRun(action, {
+                targetId: recommendation.id,
+                reason: `kubernetes optimization review: ${recommendation.id}`,
+              });
+            }
+          }}
+        />
+      </section>
+
+      <section className="stream-panel" id="stream-health" aria-labelledby="stream-health-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="stream-health-title">Elastic Data Stream Health</h2>
+            <p>{dashboard.summary.elastic_enabled ? "Elastic enabled" : "Mock-compatible mode"}</p>
+          </div>
+          <span className="compact-meta">{dashboard.summary.elastic_events ?? 0} indexed events</span>
+        </div>
+        <div className="stream-grid">
+          {dashboard.streamHealth.map((stream) => (
+            <StreamHealthRow key={stream.name} stream={stream} />
+          ))}
+        </div>
+      </section>
+    </Shell>
+  );
+}
+
+function Shell({
+  dashboard,
+  kibanaHref,
+  children,
+}: {
+  dashboard: DashboardData;
+  kibanaHref: string;
+  children: React.ReactNode;
+}) {
+  const healthState = dashboard.endpointStates.some((endpoint) => endpoint.status === "error")
+    ? "degraded"
+    : dashboard.summary.elastic_enabled
+      ? "healthy"
+      : "mock";
+  const enterpriseEntries = Object.entries(dashboard.enterpriseStatus);
+  const configuredEnterprise = enterpriseEntries.filter(
+    ([, status]) => status.image_configured || status.license_configured,
+  ).length;
+  const externalKibanaHref = externalHref(kibanaHref);
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar" aria-label="Security portal navigation">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">
+            IS
+          </span>
+          <div>
+            <strong>Security Portal</strong>
+            <span>Information security</span>
+          </div>
+        </div>
+        <nav className="nav-list" aria-label="Primary">
+          <a href="#top" className="nav-item nav-item--active">
+            <Icon name="gauge" />
+            Dashboard
+          </a>
+          <a href="#vault-radar-findings" className="nav-item">
+            <Icon name="radar" />
+            Findings
+          </a>
+          <a href="#vault-radar-sources" className="nav-item">
+            <Icon name="shield" />
+            Radar Sources
+          </a>
+          <a href="#audit" className="nav-item">
+            <Icon name="activity" />
+            Audit
+          </a>
+          <a href="#data-security" className="nav-item">
+            <Icon name="database" />
+            Data Security
+          </a>
+          <a href="#vault" className="nav-item">
+            <Icon name="key" />
+            Vault
+          </a>
+          <a href="#application-risk" className="nav-item">
+            <Icon name="package" />
+            App Risk
+          </a>
+          <a href="#automation" className="nav-item">
+            <Icon name="workflow" />
+            Automation
+          </a>
+          <a href="#observability" className="nav-item">
+            <Icon name="cluster" />
+            Observability
+          </a>
+          <a href="#kubernetes-optimization" className="nav-item">
+            <Icon name="gauge" />
+            Optimization
+          </a>
+          <a href="#stream-health" className="nav-item">
+            <Icon name="stream" />
+            Elastic
+          </a>
+          <a href="#runbooks" className="nav-item">
+            <Icon name="shield" />
+            Runbooks
+          </a>
+        </nav>
+        <div className="sidebar-status">
+          <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
+          <div>
+            <strong>{labelize(healthState)}</strong>
+            <span>{dashboard.endpointStates.length || ENDPOINTS.length} API sources</span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="workspace" id="top">
+        <header className="topbar">
+          <div>
+            <h1>Risk Summary</h1>
+            <p>Lab environment telemetry</p>
+          </div>
+          <div className="topbar-actions">
+            <span className="environment-chip">LAB</span>
+            <span className="environment-chip">
+              {configuredEnterprise}/{Math.max(enterpriseEntries.length, 1)} enterprise
+            </span>
+            <span className={`health-chip health-chip--${healthState}`}>
+              <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
+              {labelize(healthState)}
+            </span>
+            {externalKibanaHref ? (
+              <a className="action-button action-button--icon" href={externalKibanaHref} target="_blank" rel="noreferrer">
+                <Icon name="external" />
+                Kibana
+              </a>
+            ) : (
+              <span className="action-button action-button--disabled action-button--icon">
+                <Icon name="external" />
+                Kibana
+              </span>
+            )}
+            <span className="user-chip">
+              <Icon name="user" />
+              SOC Analyst
+            </span>
+          </div>
+        </header>
+        <main className="dashboard">{children}</main>
+        <footer className="runbook-anchor" id="runbooks" aria-label="Runbook shortcuts">
+          <strong>Runbooks</strong>
+          <a href="#automation">Automation</a>
+          <a href="#observability">Observability</a>
+          <a href="#kubernetes-optimization">Optimization</a>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RiskCard({
+  icon,
+  label,
+  value,
+  trend,
+  severity,
+}: {
+  icon: IconName;
+  label: string;
+  value: string;
+  trend: string;
+  severity: string;
+}) {
+  return (
+    <article className={`risk-card severity-border severity-border--${severity}`}>
+      <div className="risk-card__top">
+        <span className="icon-box" aria-hidden="true">
+          <Icon name={icon} />
+        </span>
+        <span className={`severity-pill severity-pill--${severity}`}>{labelize(severity)}</span>
+      </div>
+      <div className="risk-card__metric">{value}</div>
+      <div className="risk-card__label">{label}</div>
+      <div className="risk-card__trend">{trend}</div>
+    </article>
+  );
+}
+
+function InvestigationTimeline({ steps }: { steps: InvestigationStep[] }) {
+  if (steps.length === 0) {
+    return <EmptyState title="No timeline events" detail="No correlated activity is available." />;
+  }
+
+  return (
+    <ol className="timeline">
+      {steps.map((step) => (
+        <li className="timeline__item" key={step.id}>
+          <span className={`timeline__marker timeline__marker--${step.severity}`} aria-hidden="true" />
+          <div className="timeline__content">
+            <div className="timeline__meta">
+              <span>{formatTime(step.time)}</span>
+              <span>{step.source}</span>
+            </div>
+            <h3>{step.title}</h3>
+            <p>{step.detail}</p>
+            <span className="compact-meta">{step.meta}</span>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function FindingsTable({
+  findings,
+  selectedId,
+  onSelect,
+}: {
+  findings: Finding[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  if (findings.length === 0) {
+    return <EmptyState title="No findings" detail="No Vault Radar rows match the current filters." />;
+  }
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <caption>Vault Radar findings</caption>
+        <thead>
+          <tr>
+            <th scope="col">Severity</th>
+            <th scope="col">Type</th>
+            <th scope="col">Secret path</th>
+            <th scope="col">Risk</th>
+            <th scope="col">Seen</th>
+            <th scope="col" aria-label="Open" />
+          </tr>
+        </thead>
+        <tbody>
+          {findings.map((finding) => (
+            <tr
+              key={finding.id}
+              className={finding.id === selectedId ? "is-selected" : ""}
+              onClick={() => onSelect(finding.id)}
+            >
+              <td>
+                <button className="row-button" type="button" onClick={() => onSelect(finding.id)}>
+                  <span className={`severity-pill severity-pill--${finding.severity}`}>
+                    {labelize(finding.severity)}
+                  </span>
+                </button>
+              </td>
+              <td>
+                <div>{labelize(finding.type)}</div>
+                {finding.subType ? <span className="compact-meta">{labelize(finding.subType)}</span> : null}
+              </td>
+              <td>
+                <span className="path-text">{finding.secretPath || "Unknown path"}</span>
+                {finding.line ? <span className="compact-meta">line {finding.line}</span> : null}
+              </td>
+              <td>
+                <RiskMeter value={finding.riskScore} />
+              </td>
+              <td>{formatTime(finding.eventTime)}</td>
+              <td>
+                <DeepLinkButton href={finding.deepLink} label="Open finding" />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DbAuditTable({
+  events,
+  selectedId,
+  onSelect,
+}: {
+  events: AuditEvent[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  if (events.length === 0) {
+    return <EmptyState title="No DB activity" detail="No pgAudit rows match the current filters." />;
+  }
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <caption>Database audit activity</caption>
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">User</th>
+            <th scope="col">Action</th>
+            <th scope="col">Database</th>
+            <th scope="col">Table</th>
+            <th scope="col">Result</th>
+            <th scope="col">Risk</th>
+            <th scope="col" aria-label="Open" />
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((event) => (
+            <tr
+              key={event.id}
+              className={event.id === selectedId ? "is-selected" : ""}
+              onClick={() => onSelect(event.id)}
+            >
+              <td>
+                <button className="row-button row-button--time" type="button" onClick={() => onSelect(event.id)}>
+                  {formatTime(event.eventTime)}
+                </button>
+              </td>
+              <td>{event.user || "Unknown"}</td>
+              <td>{labelize(event.action || event.eventType)}</td>
+              <td>{event.dbName || "Unknown"}</td>
+              <td>
+                <span className="path-text">{event.tableName || "n/a"}</span>
+              </td>
+              <td>
+                <span className={`result-pill result-pill--${event.result || "unknown"}`}>
+                  {event.result || "unknown"}
+                </span>
+              </td>
+              <td>
+                <RiskMeter value={event.riskScore} />
+              </td>
+              <td>
+                <DeepLinkButton href={event.deepLink} label="Open audit event" />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SelectionPanel({ finding, event }: { finding?: Finding; event?: AuditEvent }) {
+  return (
+    <aside className="selection-panel" aria-label="Selected row details">
+      <div className="section-heading">
+        <div>
+          <h2>Selection details</h2>
+          <p>Current investigation context</p>
+        </div>
+      </div>
+      {finding ? (
+        <div className="detail-block">
+          <span className={`severity-pill severity-pill--${finding.severity}`}>
+            {labelize(finding.severity)}
+          </span>
+          <h3>{labelize(finding.type)}</h3>
+          <dl>
+            <div>
+              <dt>Path</dt>
+              <dd>
+                {finding.secretPath || "Unknown"}
+                {finding.line ? `:${finding.line}` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd>{finding.source}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>{finding.status || "unknown"}</dd>
+            </div>
+            <div>
+              <dt>Category</dt>
+              <dd>{finding.subType ? labelize(finding.subType) : labelize(finding.type)}</dd>
+            </div>
+            <div>
+              <dt>Risk</dt>
+              <dd>{finding.riskScore}</dd>
+            </div>
+          </dl>
+        </div>
+      ) : (
+        <EmptyState title="No finding selected" detail="Select a finding row." />
+      )}
+
+      {event ? (
+        <div className="detail-block detail-block--db">
+          <span className={`severity-pill severity-pill--${event.severity}`}>
+            {labelize(event.severity)}
+          </span>
+          <h3>{event.dbName || "Database activity"}</h3>
+          <dl>
+            <div>
+              <dt>Credential</dt>
+              <dd>{event.credentialId || event.user || "Unknown"}</dd>
+            </div>
+            <div>
+              <dt>Action</dt>
+              <dd>{labelize(event.action || event.eventType)}</dd>
+            </div>
+            <div>
+              <dt>Result</dt>
+              <dd>{event.result || "unknown"}</dd>
+            </div>
+          </dl>
+        </div>
+      ) : (
+        <EmptyState title="No audit row selected" detail="Select a DB audit row." />
+      )}
+    </aside>
+  );
+}
+
+function StreamHealthRow({ stream }: { stream: StreamHealth }) {
+  return (
+    <article className="stream-row">
+      <div>
+        <span className={`status-dot status-dot--${stream.status}`} aria-hidden="true" />
+        <strong>{stream.name}</strong>
+        <span>{stream.source}</span>
+      </div>
+      <div className="stream-row__metrics">
+        <span>{stream.count} events</span>
+        <span>{stream.freshness}</span>
+      </div>
+    </article>
+  );
+}
+
+function VaultRadarSourcesPanel({ sources }: { sources: VaultRadarSource[] }) {
+  return (
+    <div className="vault-radar-source-grid">
+      {sources.map((source) => (
+        <article className="vault-radar-source-card" key={source.id}>
+          <div className="vault-radar-source-card__top">
+            <span className="icon-box" aria-hidden="true">
+              <Icon name={source.id === "aws-lab-inventory" ? "cluster" : "radar"} />
+            </span>
+            <span className={`result-pill result-pill--${source.status}`}>
+              {labelize(source.status)}
+            </span>
+          </div>
+          <div>
+            <h3>{source.name}</h3>
+            <span className="compact-meta">{labelize(source.type)}</span>
+          </div>
+          <p>{source.scope}</p>
+          <code>{source.command}</code>
+          <span className="compact-meta">
+            {source.lastVerifiedAt ? `Verified ${formatTime(source.lastVerifiedAt)}` : "Awaiting live scan"}
+          </span>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ApplicationRiskPanel({
+  summary,
+  signals,
+}: {
+  summary: ApplicationRiskSummary;
+  signals: RiskSignal[];
+}) {
+  return (
+    <div className="risk-signal-layout">
+      <div className="application-risk-summary">
+        <div>
+          <span className="compact-meta">Applications</span>
+          <strong>{summary.applicationCount}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Open critical</span>
+          <strong>{summary.openCritical}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Sources</span>
+          <strong>{summary.sources.map(labelize).join(", ")}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Latest signal</span>
+          <strong>{formatTime(summary.lastObservedAt)}</strong>
+        </div>
+      </div>
+
+      <div className="table-wrap">
+        <table>
+          <caption>Application risk signals</caption>
+          <thead>
+            <tr>
+              <th scope="col">Risk</th>
+              <th scope="col">Source</th>
+              <th scope="col">Application</th>
+              <th scope="col">Finding</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {signals.map((signal) => (
+              <tr key={signal.signalId}>
+                <td>
+                  <RiskMeter value={signal.riskScore} />
+                </td>
+                <td>
+                  <div>{labelize(signal.sourceName)}</div>
+                  <span className="compact-meta">{labelize(signal.category)}</span>
+                </td>
+                <td>
+                  <div>{signal.applicationName}</div>
+                  <span className="compact-meta">{labelize(signal.environment)}</span>
+                </td>
+                <td>
+                  <div className="path-text">{signal.findingTitle}</div>
+                  <span className={`severity-pill severity-pill--${signal.severity}`}>
+                    {labelize(signal.severity)}
+                  </span>
+                </td>
+                <td>{signal.owner || "Unassigned"}</td>
+                <td>
+                  <span className="path-text">{signal.remediationAction}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AutomationPanel({
+  actions,
+  selectedActionId,
+  isRunning,
+  result,
+  error,
+  onRun,
+}: {
+  actions: DryRunAction[];
+  selectedActionId: string;
+  isRunning: boolean;
+  result: DryRunResult | null;
+  error: string;
+  onRun: (action: DryRunAction) => void;
+}) {
+  return (
+    <div className="automation-layout">
+      <div className="automation-actions">
+        {actions.map((action) => (
+          <article
+            className={`automation-card ${action.id === selectedActionId ? "automation-card--active" : ""}`}
+            key={action.id}
+          >
+            <div className="automation-card__top">
+              <span className="icon-box" aria-hidden="true">
+                <Icon name={action.engine.startsWith("argo") ? "workflow" : "activity"} />
+              </span>
+              <span className={`result-pill result-pill--${action.status}`}>
+                {labelize(action.engine)}
+              </span>
+            </div>
+            <h3>{action.title}</h3>
+            <p>{labelize(action.targetType)} / risk -{action.riskReduction}</p>
+            <button
+              className="action-button"
+              type="button"
+              disabled={isRunning}
+              onClick={() => onRun(action)}
+            >
+              {isRunning && action.id === selectedActionId ? "Planning..." : "Dry run"}
+            </button>
+          </article>
+        ))}
+      </div>
+
+      <div className="dry-run-result">
+        {error ? <div className="notice notice--error">{error}</div> : null}
+        {result ? (
+          <>
+            <div className="detail-block">
+              <span className="compact-meta">{result.workflowKind}</span>
+              <h3>{result.runId}</h3>
+              <dl>
+                <div>
+                  <dt>Engine</dt>
+                  <dd>{labelize(result.engine)}</dd>
+                </div>
+                <div>
+                  <dt>Target</dt>
+                  <dd>{result.targetId}</dd>
+                </div>
+                <div>
+                  <dt>Execution</dt>
+                  <dd>{result.executionBlocked ? "Blocked for review" : "Allowed"}</dd>
+                </div>
+              </dl>
+            </div>
+            <ol className="dry-run-steps">
+              {result.plan.map((step) => (
+                <li key={`${result.runId}-${step.order}`}>
+                  <span>{step.order}</span>
+                  <div>
+                    <strong>{step.name}</strong>
+                    <small>{step.willExecute ? "will execute" : "dry-run only"}</small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </>
+        ) : (
+          <EmptyState title="No dry-run yet" detail="Choose an action to preview the reviewed workflow plan." />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ObservabilityPanel({
+  targets,
+  links,
+  platform,
+}: {
+  targets: ObservabilityTarget[];
+  links: ObservabilityLinks;
+  platform: KubernetesPlatform;
+}) {
+  return (
+    <div className="observability-layout">
+      <div className="observability-primary">
+        <section className="console-links" aria-labelledby="console-links-title">
+          <div className="observability-subheading">
+            <div>
+              <h3 id="console-links-title">Console navigation</h3>
+              <p>Navigation only. Link availability does not indicate service health or telemetry freshness.</p>
+            </div>
+            <span className="compact-meta">Environment URLs</span>
+          </div>
+          <div className="console-link-grid">
+            {links.links.map((link) => (
+              <article className="console-link-card" key={link.id}>
+                <strong>{link.name}</strong>
+                {link.configured && link.url ? (
+                  <a
+                    className="console-link-action"
+                    href={link.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    aria-label={`Open ${link.name}`}
+                  >
+                    <Icon name="external" />
+                    Open
+                  </a>
+                ) : (
+                  <span className="console-link-action console-link-action--disabled" aria-disabled="true">
+                    Not configured
+                  </span>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="collection-targets" aria-labelledby="collection-targets-title">
+          <div className="observability-subheading">
+            <h3 id="collection-targets-title">Collection targets</h3>
+            <span className="compact-meta">Signal status</span>
+          </div>
+          <div className="target-grid">
+            {targets.map((target) => (
+              <article className="target-card" key={target.id}>
+                <div>
+                  <span className={`status-dot status-dot--${target.status === "ready" ? "receiving" : "quiet"}`} aria-hidden="true" />
+                  <strong>{target.name}</strong>
+                </div>
+                <span>{target.scrapeJob}</span>
+                <span className="compact-meta">{target.endpointType} / {target.signal}</span>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+      <div className="platform-panel">
+        <div className="detail-block">
+          <span className="compact-meta">{labelize(platform.status)}</span>
+          <h3>{labelize(platform.mode)}</h3>
+          <dl>
+            <div>
+              <dt>Cluster</dt>
+              <dd>{platform.clusterName}</dd>
+            </div>
+            <div>
+              <dt>Namespace</dt>
+              <dd>{platform.namespace}</dd>
+            </div>
+            <div>
+              <dt>Compute</dt>
+              <dd>{labelize(platform.computeMode)}</dd>
+            </div>
+            <div>
+              <dt>Create</dt>
+              <dd>{platform.creationScript}</dd>
+            </div>
+            <div>
+              <dt>Deploy</dt>
+              <dd>{platform.deploymentScript}</dd>
+            </div>
+          </dl>
+        </div>
+        <div className="component-list">
+          {platform.components.map((component) => (
+            <span key={component.name}>
+              <strong>{component.name}</strong>
+              {component.purpose}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KubernetesOptimizationPanel({
+  summary,
+  recommendations,
+  onRunRecommendation,
+}: {
+  summary: KubernetesCostSummary;
+  recommendations: OptimizationRecommendation[];
+  onRunRecommendation: (recommendation: OptimizationRecommendation) => void;
+}) {
+  return (
+    <div className="optimization-layout">
+      <div className="optimization-summary">
+        <div>
+          <span className="compact-meta">Daily cost</span>
+          <strong>{formatMoney(summary.dailyCost)}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Monthly projection</span>
+          <strong>{formatMoney(summary.monthlyProjection)}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Potential savings</span>
+          <strong>{formatMoney(summary.potentialMonthlySavings)}</strong>
+        </div>
+        <div>
+          <span className="compact-meta">Signals</span>
+          <strong>{summary.recommendationCount} recommendations</strong>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <caption>Kubernetes cost and optimization recommendations</caption>
+          <thead>
+            <tr>
+              <th scope="col">Severity</th>
+              <th scope="col">Source</th>
+              <th scope="col">Workload</th>
+              <th scope="col">Current</th>
+              <th scope="col">Recommended</th>
+              <th scope="col">Savings</th>
+              <th scope="col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recommendations.length > 0 ? (
+              recommendations.map((recommendation) => (
+                <tr key={recommendation.id}>
+                  <td>
+                    <span className={`severity-pill severity-pill--${recommendation.severity}`}>
+                      {labelize(recommendation.severity)}
+                    </span>
+                  </td>
+                  <td>
+                    <div>{recommendation.source}</div>
+                    <span className="compact-meta">{labelize(recommendation.type)}</span>
+                  </td>
+                  <td>
+                    <div className="path-text">{recommendation.workload}</div>
+                    <span className="compact-meta">{recommendation.namespace || "cluster"}</span>
+                  </td>
+                  <td>{recommendation.current}</td>
+                  <td>{recommendation.recommended}</td>
+                  <td>{formatMoney(recommendation.monthlySavings)}</td>
+                  <td>
+                    <button
+                      className="action-button action-button--compact"
+                      type="button"
+                      onClick={() => onRunRecommendation(recommendation)}
+                    >
+                      Dry run
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7}>
+                  <EmptyState
+                    title="No live optimization recommendations"
+                    detail="OpenCost currently reports no recommendation signals for this cluster."
+                  />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DeepLinkButton({ href, label }: { href?: string; label: string }) {
+  const target = externalHref(href);
+  if (!target) {
+    return <span className="icon-link icon-link--disabled" aria-label={`${label} unavailable`} />;
+  }
+
+  return (
+    <a className="icon-link" href={target} target="_blank" rel="noreferrer" aria-label={label} title={label}>
+      <Icon name="external" />
+    </a>
+  );
+}
+
+function SearchBox({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="search-box">
+      <span className="sr-only">{label}</span>
+      <Icon name="search" />
+      <input
+        type="search"
+        placeholder={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="filter-select">
+      <span className="sr-only">{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)} aria-label={label}>
+        <option value="all">All {label.toLowerCase()}</option>
+        {options.map((option) => (
+          <option value={option} key={option}>
+            {labelize(option)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function RiskMeter({ value }: { value: number }) {
+  const safeValue = Math.max(0, Math.min(100, value || 0));
+  return (
+    <span className="risk-meter" aria-label={`Risk score ${safeValue}`}>
+      <span>
+        <i style={{ width: `${safeValue}%` }} />
+      </span>
+      <strong>{safeValue}</strong>
+    </span>
+  );
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="empty-state" role="status">
+      <Icon name="activity" />
+      <strong>{title}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
+function Icon({ name }: { name: IconName }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (name === "gauge") {
+    return (
+      <svg {...common}>
+        <path d="M4 14a8 8 0 0 1 16 0" />
+        <path d="M12 14l4-5" />
+        <path d="M7 18h10" />
+      </svg>
+    );
+  }
+
+  if (name === "radar") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="12" r="8" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 12l6-6" />
+        <path d="M12 4v2M20 12h-2M12 20v-2M4 12h2" />
+      </svg>
+    );
+  }
+
+  if (name === "key") {
+    return (
+      <svg {...common}>
+        <circle cx="8" cy="12" r="3" />
+        <path d="M11 12h9" />
+        <path d="M16 12v3M19 12v2" />
+      </svg>
+    );
+  }
+
+  if (name === "database") {
+    return (
+      <svg {...common}>
+        <ellipse cx="12" cy="6" rx="7" ry="3" />
+        <path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+        <path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" />
+      </svg>
+    );
+  }
+
+  if (name === "stream") {
+    return (
+      <svg {...common}>
+        <path d="M5 7h8a4 4 0 0 1 0 8H4" />
+        <path d="M17 7h2M17 15h2" />
+        <path d="M4 19h9a5 5 0 0 0 0-10H5" />
+      </svg>
+    );
+  }
+
+  if (name === "search") {
+    return (
+      <svg {...common}>
+        <circle cx="11" cy="11" r="6" />
+        <path d="M16 16l4 4" />
+      </svg>
+    );
+  }
+
+  if (name === "shield") {
+    return (
+      <svg {...common}>
+        <path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3Z" />
+        <path d="M9 12l2 2 4-5" />
+      </svg>
+    );
+  }
+
+  if (name === "external") {
+    return (
+      <svg {...common}>
+        <path d="M9 5h10v10" />
+        <path d="M19 5l-9 9" />
+        <path d="M7 9H5v10h10v-2" />
+      </svg>
+    );
+  }
+
+  if (name === "user") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 20c1.7-3.2 4.2-5 8-5s6.3 1.8 8 5" />
+      </svg>
+    );
+  }
+
+  if (name === "workflow") {
+    return (
+      <svg {...common}>
+        <path d="M6 6h5v5H6z" />
+        <path d="M13 13h5v5h-5z" />
+        <path d="M11 8h3a2 2 0 0 1 2 2v3" />
+        <path d="M8 11v3a2 2 0 0 0 2 2h3" />
+      </svg>
+    );
+  }
+
+  if (name === "package") {
+    return (
+      <svg {...common}>
+        <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
+        <path d="M4.5 7.8L12 12l7.5-4.2" />
+        <path d="M12 12v9" />
+      </svg>
+    );
+  }
+
+  if (name === "certificate") {
+    return (
+      <svg {...common}>
+        <path d="M7 4h10v12H7z" />
+        <path d="M9 8h6M9 11h4" />
+        <path d="M10 16l-1 4 3-2 3 2-1-4" />
+      </svg>
+    );
+  }
+
+  if (name === "cluster") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="5" r="3" />
+        <circle cx="6" cy="17" r="3" />
+        <circle cx="18" cy="17" r="3" />
+        <path d="M10.5 7.5L7.5 14M13.5 7.5l3 6.5M9 17h6" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path d="M4 17l5-5 4 4 7-9" />
+      <path d="M4 20h16" />
+    </svg>
+  );
+}
+
+async function fetchJson(path: string, signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    signal,
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+async function postDryRun({
+  actionId,
+  engine,
+  targetId,
+  reason,
+}: {
+  actionId: string;
+  engine: string;
+  targetId: string;
+  reason: string;
+}): Promise<DryRunResult> {
+  const response = await fetch(`${API_BASE}/api/workflows/actions/dry-run`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action_id: actionId,
+      engine,
+      target_id: targetId,
+      reason,
+      dry_run: true,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+
+  return normalizeDryRunResult(await response.json());
+}
+
+function createDashboardData(
+  responses: Array<{
+    endpoint: { key: ApiKey; label: string; path: string };
+    data: unknown;
+    error: string | null;
+  }>,
+): DashboardData {
+  const byKey = new Map<ApiKey, unknown>();
+  const endpointStates: EndpointState[] = responses.map(({ endpoint, data, error }) => {
+    byKey.set(endpoint.key, data);
+    const count = endpointCount(endpoint.key, data);
+    return {
+      ...endpoint,
+      status: error ? "error" : count > 0 ? "ok" : "empty",
+      count,
+      error: error ?? undefined,
+    };
+  });
+
+  const summary = normalizeSummary(byKey.get("summary"));
+  const appRiskSummary = normalizeApplicationRiskSummary(byKey.get("applicationRiskSummary"));
+  const riskSignals = asArray(byKey.get("applicationRiskSignals")).map(normalizeRiskSignal);
+  const observabilityTargets = asArray(byKey.get("observabilityTargets")).map(normalizeObservabilityTarget);
+  const observabilityLinks = normalizeObservabilityLinks(byKey.get("observabilityLinks"));
+  const kubernetesPlatform = normalizeKubernetesPlatform(byKey.get("kubernetesPlatform"));
+  const kubernetesCostSummary = normalizeKubernetesCostSummary(byKey.get("kubernetesCostSummary"));
+  const optimizationRecommendations = asArray(byKey.get("kubernetesOptimization")).map(normalizeOptimizationRecommendation);
+  const optimizationEndpoint = endpointStates.find((endpoint) => endpoint.key === "kubernetesOptimization");
+  const dryRunActions = asArray(byKey.get("dryRunActions")).map(normalizeDryRunAction);
+  const enterpriseStatus = normalizeEnterpriseStatus(byKey.get("enterpriseStatus"));
+  const findings = dedupeById([
+    ...asArray(byKey.get("vaultRadarFindings")).map(normalizeFinding),
+  ]).sort(compareRiskThenTime);
+  const normalizedFindings = findings.length > 0 ? findings : FALLBACK_FINDINGS;
+  const vaultRadarSources = asArray(byKey.get("vaultRadarSources")).map(normalizeVaultRadarSource);
+
+  const allEvents = dedupeById([
+    ...asArray(byKey.get("elasticEvents")).map(normalizeAuditEvent),
+    ...asArray(byKey.get("vaultAuditEvents")).map(normalizeAuditEvent),
+    ...asArray(byKey.get("dbAuditEvents")).map(normalizeAuditEvent),
+  ]).sort(compareRiskThenTime);
+  const vaultEvents = allEvents.filter(isVaultEvent);
+  const dbEvents = allEvents.filter(isDbAuditEvent);
+  const normalizedVaultEvents = vaultEvents.length > 0 ? vaultEvents : FALLBACK_VAULT_EVENTS;
+  const normalizedDbEvents = dbEvents.length > 0 ? dbEvents : FALLBACK_DB_EVENTS;
+  const normalizedAuditEvents =
+    allEvents.length > 0 ? allEvents : [...FALLBACK_VAULT_EVENTS, ...FALLBACK_DB_EVENTS];
+  const normalizedRiskSignals = riskSignals.length > 0 ? riskSignals : FALLBACK_RISK_SIGNALS;
+  const normalizedAppRiskSummary = appRiskSummary.signalCount > 0
+    ? appRiskSummary
+    : createApplicationRiskSummary(normalizedRiskSignals);
+  const normalizedDryRunActions = dryRunActions.length > 0 ? dryRunActions : FALLBACK_DRY_RUN_ACTIONS;
+  const finalSummary = {
+    ...enrichSummary(summary, normalizedFindings, normalizedVaultEvents, normalizedDbEvents),
+    app_risk: Math.max(summary.app_risk, normalizedAppRiskSummary.score),
+    cost_risk: Math.max(summary.cost_risk, Math.min(100, Math.round(kubernetesCostSummary.potentialMonthlySavings / 25))),
+    pending_approvals: Math.max(
+      summary.pending_approvals,
+      normalizedDryRunActions.filter((action) => action.status === "ready").length,
+    ),
+  };
+  const streamHealth = createStreamHealth(finalSummary, endpointStates, normalizedVaultEvents, normalizedDbEvents, normalizedFindings);
+  const investigation = createInvestigation(normalizedFindings, normalizedVaultEvents, normalizedDbEvents);
+  const isFallback =
+    findings.length === 0 ||
+    dbEvents.length === 0 ||
+    endpointStates.some((endpoint) => endpoint.status === "error");
+
+  return {
+    summary: finalSummary,
+    findings: normalizedFindings,
+    auditEvents: normalizedAuditEvents,
+    vaultEvents: normalizedVaultEvents,
+    dbEvents: normalizedDbEvents,
+    vaultRadarSources: vaultRadarSources.length > 0 ? vaultRadarSources : FALLBACK_VAULT_RADAR_SOURCES,
+    appRiskSummary: normalizedAppRiskSummary,
+    riskSignals: normalizedRiskSignals,
+    observabilityTargets: observabilityTargets.length > 0 ? observabilityTargets : FALLBACK_OBSERVABILITY_TARGETS,
+    observabilityLinks,
+    kubernetesPlatform,
+    kubernetesCostSummary,
+    optimizationRecommendations: optimizationRecommendations.length > 0
+      ? optimizationRecommendations
+      : optimizationEndpoint?.status === "error"
+        ? FALLBACK_OPTIMIZATION_RECOMMENDATIONS
+        : [],
+    dryRunActions: normalizedDryRunActions,
+    enterpriseStatus,
+    streamHealth,
+    investigation,
+    endpointStates,
+    isFallback,
+  };
+}
+
+function normalizeSummary(value: unknown): Summary {
+  const source = isRecord(value) ? value : {};
+  return {
+    security_score: asNumber(source.security_score, DEFAULT_SUMMARY.security_score),
+    open_offenses: asNumber(source.open_offenses, DEFAULT_SUMMARY.open_offenses),
+    critical_findings: asNumber(source.critical_findings, DEFAULT_SUMMARY.critical_findings),
+    exposed_secrets: asNumber(source.exposed_secrets, DEFAULT_SUMMARY.exposed_secrets),
+    data_risk: asNumber(source.data_risk, DEFAULT_SUMMARY.data_risk),
+    app_risk: asNumber(source.app_risk, DEFAULT_SUMMARY.app_risk),
+    cost_risk: asNumber(source.cost_risk, DEFAULT_SUMMARY.cost_risk),
+    pending_approvals: asNumber(source.pending_approvals, DEFAULT_SUMMARY.pending_approvals),
+    elastic_events: asOptionalNumber(source.elastic_events),
+    vault_audit_events: asOptionalNumber(source.vault_audit_events),
+    db_audit_events: asOptionalNumber(source.db_audit_events),
+    vault_radar_findings: asOptionalNumber(source.vault_radar_findings),
+    elastic_enabled: Boolean(source.elastic_enabled),
+    kibana_url: asText(source.kibana_url, ""),
+  };
+}
+
+function normalizeApplicationRiskSummary(value: unknown): ApplicationRiskSummary {
+  const source = isRecord(value) ? value : {};
+  return {
+    score: asNumber(source.score, 0),
+    scoreBand: normalizeSeverity(source.score_band ?? source.scoreBand),
+    applicationCount: asNumber(source.application_count ?? source.applicationCount, 0),
+    signalCount: asNumber(source.signal_count ?? source.signalCount, 0),
+    openCritical: asNumber(source.open_critical ?? source.openCritical, 0),
+    sources: asArray(source.sources).map((item) => asText(item)).filter(Boolean),
+    topApplications: asArray(source.top_applications ?? source.topApplications)
+      .map((item) => asText(item))
+      .filter(Boolean),
+    lastObservedAt: asText(source.last_observed_at ?? source.lastObservedAt, ""),
+  };
+}
+
+function createApplicationRiskSummary(signals: RiskSignal[]): ApplicationRiskSummary {
+  const scores = signals.map((signal) => signal.riskScore);
+  const maxScore = Math.max(...scores, DEFAULT_APP_RISK_SUMMARY.score);
+  const averageTopScore =
+    scores.length > 0
+      ? Math.round(scores.sort((a, b) => b - a).slice(0, 5).reduce((total, score) => total + score, 0) / Math.min(scores.length, 5))
+      : DEFAULT_APP_RISK_SUMMARY.score;
+  const score = Math.round(maxScore * 0.55 + averageTopScore * 0.45);
+
+  return {
+    score,
+    scoreBand: scoreSeverity(score),
+    applicationCount: new Set(signals.map((signal) => signal.applicationName)).size,
+    signalCount: signals.length,
+    openCritical: signals.filter((signal) => signal.riskScore >= 75).length,
+    sources: createOptions(signals.map((signal) => signal.sourceName)),
+    topApplications: createOptions(signals.map((signal) => signal.applicationName)),
+    lastObservedAt: latestTime(signals.map((signal) => ({ eventTime: signal.observedAt }))).replace("Latest ", ""),
+  };
+}
+
+function normalizeRiskSignal(value: unknown, index = 0): RiskSignal {
+  const source = isRecord(value) ? value : {};
+  const sourceInfo = isRecord(source.source) ? source.source : {};
+  const app = isRecord(source.application) ? source.application : {};
+  const resource = isRecord(source.resource) ? source.resource : {};
+  const finding = isRecord(source.finding) ? source.finding : {};
+  const risk = isRecord(source.risk) ? source.risk : {};
+  const remediation = isRecord(source.remediation) ? source.remediation : {};
+  const severity = normalizeSeverity(finding.severity ?? risk.score_band ?? risk.scoreBand);
+  const score = asNumber(risk.score, severityDefaultScore(severity));
+
+  return {
+    signalId: asText(source.signal_id ?? source.signalId, `risk-signal-${index}`),
+    observedAt: asText(source.observed_at ?? source.observedAt, ""),
+    sourceName: asText(sourceInfo.name, "manual"),
+    sourceType: asText(sourceInfo.type, "collector"),
+    applicationName: asText(app.name, "unknown-app"),
+    owner: asText(app.owner, ""),
+    environment: asText(app.environment, "lab"),
+    resourceKind: asText(resource.kind, ""),
+    resourceName: asText(resource.name, ""),
+    findingTitle: asText(finding.title, "Application risk signal"),
+    category: asText(finding.category, "risk"),
+    severity,
+    status: asText(finding.status, "open"),
+    riskScore: score,
+    scoreBand: asText(risk.score_band ?? risk.scoreBand, scoreSeverity(score)),
+    remediationAction: asText(remediation.action, "Review finding with the application owner."),
+    humanReviewRequired: Boolean(remediation.human_review_required ?? remediation.humanReviewRequired),
+  };
+}
+
+function normalizeObservabilityTarget(value: unknown, index = 0): ObservabilityTarget {
+  const source = isRecord(value) ? value : {};
+  return {
+    id: asText(source.id, `target-${index}`),
+    name: asText(source.name, "Unknown target"),
+    scrapeJob: asText(source.scrape_job ?? source.scrapeJob, ""),
+    endpointType: asText(source.endpoint_type ?? source.endpointType, ""),
+    status: asText(source.status, "planned"),
+    signal: asText(source.signal, ""),
+  };
+}
+
+function normalizeObservabilityLinks(value: unknown): ObservabilityLinks {
+  const source = isRecord(value) ? value : {};
+  const linksById = new Map<string, Record<string, unknown>>();
+  asArray(source.links).forEach((item) => {
+    if (!isRecord(item)) return;
+    const id = asText(item.id, "");
+    if (id) linksById.set(id, item);
+  });
+
+  return {
+    purpose: "navigation",
+    healthEvaluated: Boolean(source.health_evaluated ?? source.healthEvaluated),
+    freshnessEvaluated: Boolean(source.freshness_evaluated ?? source.freshnessEvaluated),
+    links: DEFAULT_OBSERVABILITY_LINKS.links.map((defaultLink) => {
+      const sourceLink = linksById.get(defaultLink.id);
+      const url = sourceLink?.configured ? externalHref(asText(sourceLink.url, "")) : "";
+      return { ...defaultLink, configured: Boolean(url), url };
+    }),
+  };
+}
+
+function normalizeKubernetesPlatform(value: unknown): KubernetesPlatform {
+  if (!isRecord(value)) return FALLBACK_KUBERNETES_PLATFORM;
+  return {
+    mode: asText(value.mode, FALLBACK_KUBERNETES_PLATFORM.mode),
+    status: asText(value.status, FALLBACK_KUBERNETES_PLATFORM.status),
+    clusterName: asText(value.cluster_name ?? value.clusterName, FALLBACK_KUBERNETES_PLATFORM.clusterName),
+    namespace: asText(value.namespace, FALLBACK_KUBERNETES_PLATFORM.namespace),
+    creationScript: asText(value.creation_script ?? value.creationScript, FALLBACK_KUBERNETES_PLATFORM.creationScript),
+    deploymentScript: asText(value.deployment_script ?? value.deploymentScript, FALLBACK_KUBERNETES_PLATFORM.deploymentScript),
+    computeMode: asText(value.compute_mode ?? value.computeMode, FALLBACK_KUBERNETES_PLATFORM.computeMode),
+    components: asArray(value.components).map((item, index) => {
+      const component = isRecord(item) ? item : {};
+      return {
+        name: asText(component.name, `component-${index}`),
+        purpose: asText(component.purpose, ""),
+        status: asText(component.status, "planned"),
+      };
+    }),
+  };
+}
+
+function normalizeKubernetesCostSummary(value: unknown): KubernetesCostSummary {
+  const source = isRecord(value) ? value : {};
+  return {
+    provider: asText(source.provider, FALLBACK_KUBERNETES_COST_SUMMARY.provider),
+    mode: asText(source.mode, FALLBACK_KUBERNETES_COST_SUMMARY.mode),
+    dailyCost: asNumber(source.daily_cost ?? source.dailyCost, FALLBACK_KUBERNETES_COST_SUMMARY.dailyCost),
+    monthlyProjection: asNumber(
+      source.monthly_projection ?? source.monthlyProjection,
+      FALLBACK_KUBERNETES_COST_SUMMARY.monthlyProjection,
+    ),
+    potentialMonthlySavings: asNumber(
+      source.potential_monthly_savings ?? source.potentialMonthlySavings,
+      FALLBACK_KUBERNETES_COST_SUMMARY.potentialMonthlySavings,
+    ),
+    anomalyCount: asNumber(source.anomaly_count ?? source.anomalyCount, FALLBACK_KUBERNETES_COST_SUMMARY.anomalyCount),
+    recommendationCount: asNumber(
+      source.recommendation_count ?? source.recommendationCount,
+      FALLBACK_KUBERNETES_COST_SUMMARY.recommendationCount,
+    ),
+    lastObservedAt: asText(source.last_observed_at ?? source.lastObservedAt, FALLBACK_KUBERNETES_COST_SUMMARY.lastObservedAt),
+  };
+}
+
+function normalizeOptimizationRecommendation(value: unknown, index = 0): OptimizationRecommendation {
+  const source = isRecord(value) ? value : {};
+  return {
+    id: asText(source.id, `optimization-${index}`),
+    source: asText(source.source, "OpenCost"),
+    namespace: asText(source.namespace, ""),
+    workload: asText(source.workload, ""),
+    type: asText(source.type, "recommendation"),
+    severity: normalizeSeverity(source.severity),
+    current: asText(source.current, ""),
+    recommended: asText(source.recommended, ""),
+    monthlySavings: asNumber(source.monthly_savings ?? source.monthlySavings, 0),
+    status: asText(source.status, "review"),
+    actionId: asText(source.action_id ?? source.actionId, "rightsizing-recommendation"),
+  };
+}
+
+function normalizeVaultRadarSource(value: unknown, index = 0): VaultRadarSource {
+  const source = isRecord(value) ? value : {};
+  return {
+    id: asText(source.id, `vault-radar-source-${index}`),
+    name: asText(source.name, "Vault Radar source"),
+    type: asText(source.type, "folder"),
+    status: asText(source.status, "prepared"),
+    scope: asText(source.scope, ""),
+    command: asText(source.command, ""),
+    lastVerifiedAt: asText(source.last_verified_at ?? source.lastVerifiedAt, ""),
+  };
+}
+
+function normalizeDryRunAction(value: unknown, index = 0): DryRunAction {
+  const source = isRecord(value) ? value : {};
+  return {
+    id: asText(source.id, `dry-run-action-${index}`),
+    title: asText(source.title, "Dry-run action"),
+    engine: asText(source.engine, "stackstorm"),
+    targetType: asText(source.target_type ?? source.targetType, "selected-context"),
+    status: asText(source.status, "ready"),
+    riskReduction: asNumber(source.risk_reduction ?? source.riskReduction, 0),
+    steps: asArray(source.steps).map((step) => asText(step)).filter(Boolean),
+  };
+}
+
+function normalizeDryRunResult(value: unknown): DryRunResult {
+  const source = isRecord(value) ? value : {};
+  return {
+    runId: asText(source.run_id ?? source.runId, "dry-run"),
+    status: asText(source.status, "planned"),
+    dryRun: Boolean(source.dry_run ?? source.dryRun),
+    engine: asText(source.engine, "stackstorm"),
+    workflowKind: asText(source.workflow_kind ?? source.workflowKind, "Dry run"),
+    targetId: asText(source.target_id ?? source.targetId, ""),
+    reason: asText(source.reason, ""),
+    executionBlocked: Boolean(source.execution_blocked ?? source.executionBlocked),
+    humanReviewRequired: Boolean(source.human_review_required ?? source.humanReviewRequired),
+    plan: asArray(source.plan).map((item, index) => {
+      const step = isRecord(item) ? item : {};
+      return {
+        order: asNumber(step.order, index + 1),
+        name: asText(step.name, `step-${index + 1}`),
+        mode: asText(step.mode, "dry-run"),
+        willExecute: Boolean(step.will_execute ?? step.willExecute),
+      };
+    }),
+  };
+}
+
+function normalizeEnterpriseStatus(value: unknown): Record<string, EnterpriseProductStatus> {
+  if (!isRecord(value)) return {};
+  const entries: Array<[string, EnterpriseProductStatus]> = [];
+  Object.entries(value).forEach(([product, status]) => {
+    if (!isRecord(status)) return;
+    entries.push([
+      product,
+      {
+        edition: asText(status.edition, ""),
+        image_configured: Boolean(status.image_configured),
+        license_configured: Boolean(status.license_configured),
+        secret_values_redacted: Boolean(status.secret_values_redacted),
+      },
+    ]);
+  });
+  return Object.fromEntries(entries);
+}
+
+function endpointCount(key: ApiKey, data: unknown) {
+  if (
+    key === "summary" ||
+    key === "applicationRiskSummary" ||
+    key === "kubernetesPlatform" ||
+    key === "kubernetesCostSummary"
+  ) {
+    return data ? 1 : 0;
+  }
+  if (key === "observabilityLinks") {
+    return isRecord(data) ? asArray(data.links).length : 0;
+  }
+  if (key === "enterpriseStatus") return isRecord(data) ? Object.keys(data).length : 0;
+  return asArray(data).length;
+}
+
+function normalizeFinding(value: unknown, index = 0): Finding {
+  const source = isRecord(value) ? value : {};
+  const id = asText(source.id, `finding-${index}`);
+  return {
+    id,
+    source: asText(source.source, "Vault Radar"),
+    type: asText(source.type, "secret_exposure"),
+    subType: asText(source.sub_type ?? source.subType, ""),
+    status: asText(source.status, ""),
+    severity: normalizeSeverity(asText(source.severity, "medium")),
+    secretPath: asText(source.secret_path ?? source.secretPath ?? source.path, ""),
+    line: asOptionalNumber(source.line ?? source.line_number ?? source.lineNumber),
+    riskScore: asNumber(source.risk_score ?? source.riskScore, severityDefaultScore(source.severity)),
+    eventTime: asText(source.event_time ?? source.eventTime ?? source["@timestamp"], ""),
+    deepLink: asText(source.deep_link ?? source.deepLink, ""),
+    repository: asText(source.repository, ""),
+  };
+}
+
+function normalizeAuditEvent(value: unknown, index = 0): AuditEvent {
+  const source = isRecord(value) ? value : {};
+  const id = asText(
+    source.id ?? source.request_id ?? source.requestId,
+    `event-${index}-${asText(source.event_time ?? source.eventTime, "unknown")}`,
+  );
+  return {
+    id,
+    eventTime: asText(source.event_time ?? source.eventTime ?? source["@timestamp"], ""),
+    sourceProduct: asText(source.source_product ?? source.sourceProduct, "Elastic"),
+    eventType: asText(source.event_type ?? source.eventType, "event"),
+    severity: normalizeSeverity(asText(source.severity, "info")),
+    user: asText(source.user_email ?? source.userEmail ?? source.user_id ?? source.userId, ""),
+    sourceIp: asText(source.source_ip ?? source.sourceIp, ""),
+    environment: asText(source.environment, "lab"),
+    sessionId: asText(source.session_id ?? source.sessionId, ""),
+    requestId: asText(source.request_id ?? source.requestId, ""),
+    credentialId: asText(source.credential_id ?? source.credentialId, ""),
+    secretPath: asText(source.secret_path ?? source.secretPath, ""),
+    dbName: asText(source.db_name ?? source.dbName, ""),
+    tableName: asText(source.table_name ?? source.tableName, ""),
+    action: asText(source.action, ""),
+    result: asText(source.result, ""),
+    riskScore: asNumber(source.risk_score ?? source.riskScore, severityDefaultScore(source.severity)),
+    elasticIndex: asText(source.elastic_index ?? source.elasticIndex, ""),
+    deepLink: asText(source.deep_link ?? source.deepLink, ""),
+  };
+}
+
+function enrichSummary(
+  summary: Summary,
+  findings: Finding[],
+  vaultEvents: AuditEvent[],
+  dbEvents: AuditEvent[],
+): Summary {
+  const criticalFindings = findings.filter((finding) => finding.severity === "critical").length;
+  return {
+    ...summary,
+    critical_findings: Math.max(summary.critical_findings, criticalFindings),
+    exposed_secrets: Math.max(summary.exposed_secrets, findings.length),
+    elastic_events: summary.elastic_events ?? vaultEvents.length + dbEvents.length + findings.length,
+    vault_audit_events: summary.vault_audit_events ?? vaultEvents.length,
+    db_audit_events: summary.db_audit_events ?? dbEvents.length,
+    vault_radar_findings: summary.vault_radar_findings ?? findings.length,
+  };
+}
+
+function createStreamHealth(
+  summary: Summary,
+  endpointStates: EndpointState[],
+  vaultEvents: AuditEvent[],
+  dbEvents: AuditEvent[],
+  findings: Finding[],
+): StreamHealth[] {
+  const endpointByKey = new Map(endpointStates.map((endpoint) => [endpoint.key, endpoint]));
+  return [
+    {
+      name: "logs-vault-audit",
+      source: "Vault audit",
+      count: summary.vault_audit_events ?? vaultEvents.length,
+      status: streamStatus(summary.vault_audit_events ?? vaultEvents.length, endpointByKey.get("vaultAuditEvents")),
+      freshness: latestTime(vaultEvents),
+    },
+    {
+      name: "logs-postgresql-pgaudit",
+      source: "PostgreSQL pgAudit",
+      count: summary.db_audit_events ?? dbEvents.length,
+      status: streamStatus(summary.db_audit_events ?? dbEvents.length, endpointByKey.get("dbAuditEvents")),
+      freshness: latestTime(dbEvents),
+    },
+    {
+      name: "logs-vault-radar",
+      source: "Vault Radar",
+      count: summary.vault_radar_findings ?? findings.length,
+      status: streamStatus(summary.vault_radar_findings ?? findings.length, endpointByKey.get("vaultRadarFindings")),
+      freshness: latestTime(findings.map(findingToEventLike)),
+    },
+  ];
+}
+
+function createInvestigation(
+  findings: Finding[],
+  vaultEvents: AuditEvent[],
+  dbEvents: AuditEvent[],
+): InvestigationStep[] {
+  const finding = findings[0];
+  const vaultEvent =
+    vaultEvents.find((event) => event.credentialId || event.secretPath || event.dbName) ?? vaultEvents[0];
+  const dbEvent = dbEvents.find((event) => event.tableName || event.credentialId) ?? dbEvents[0];
+
+  return [
+    finding
+      ? {
+          id: `timeline-${finding.id}`,
+          time: finding.eventTime,
+          source: finding.source,
+          title: "Secret exposure detected",
+          detail: finding.secretPath || "Vault Radar reported a secret exposure.",
+          severity: finding.severity,
+          meta: `${finding.riskScore} risk score`,
+        }
+      : null,
+    vaultEvent
+      ? {
+          id: `timeline-${vaultEvent.id}`,
+          time: vaultEvent.eventTime,
+          source: vaultEvent.sourceProduct,
+          title: "Dynamic DB credential issued",
+          detail: vaultEvent.secretPath || vaultEvent.eventType,
+          severity: vaultEvent.severity,
+          meta: vaultEvent.credentialId || vaultEvent.requestId || "credential activity",
+        }
+      : null,
+    dbEvent
+      ? {
+          id: `timeline-${dbEvent.id}`,
+          time: dbEvent.eventTime,
+          source: dbEvent.sourceProduct,
+          title: "PostgreSQL pgAudit event",
+          detail: `${labelize(dbEvent.action || dbEvent.eventType)} on ${dbEvent.tableName || dbEvent.dbName || "database"}`,
+          severity: dbEvent.severity,
+          meta: `${dbEvent.result || "unknown"} result`,
+        }
+      : null,
+  ].filter(Boolean) as InvestigationStep[];
+}
+
+function streamStatus(count: number, endpoint?: EndpointState): StreamHealth["status"] {
+  if (endpoint?.status === "error") return "error";
+  if (count > 0 && endpoint?.status !== "empty") return "receiving";
+  if (count > 0) return "mock";
+  return "quiet";
+}
+
+function isVaultEvent(event: AuditEvent) {
+  const text = `${event.sourceProduct} ${event.eventType} ${event.secretPath}`.toLowerCase();
+  return text.includes("vault") || text.includes("credential");
+}
+
+function isDbAuditEvent(event: AuditEvent) {
+  const text = `${event.sourceProduct} ${event.eventType} ${event.dbName} ${event.tableName} ${event.elasticIndex}`.toLowerCase();
+  return (
+    text.includes("postgres") ||
+    text.includes("pgaudit") ||
+    text.includes("database") ||
+    Boolean(event.dbName || event.tableName)
+  );
+}
+
+function findingToEventLike(finding: Finding): AuditEvent {
+  return {
+    id: finding.id,
+    eventTime: finding.eventTime,
+    sourceProduct: finding.source,
+    eventType: finding.type,
+    severity: finding.severity,
+    user: "",
+    sourceIp: "",
+    environment: "lab",
+    sessionId: "",
+    requestId: "",
+    credentialId: "",
+    secretPath: finding.secretPath,
+    dbName: "",
+    tableName: "",
+    action: finding.type,
+    result: "",
+    riskScore: finding.riskScore,
+  };
+}
+
+function latestTime(events: Array<{ eventTime: string }>) {
+  const latest = events
+    .map((event) => Date.parse(event.eventTime))
+    .filter((time) => Number.isFinite(time))
+    .sort((a, b) => b - a)[0];
+
+  if (!latest) return "No recent events";
+  return `Latest ${formatTime(new Date(latest).toISOString())}`;
+}
+
+function createOptions(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function searchText(value: unknown, query: string) {
+  if (!query.trim()) return true;
+  return JSON.stringify(value).toLowerCase().includes(query.trim().toLowerCase());
+}
+
+function externalHref(value?: string) {
+  if (!value) return "";
+  const candidate = value.trim();
+  if (!candidate || /[\u0000-\u001f\u007f]/.test(candidate) || candidate.includes("\\")) return "";
+  try {
+    const parsed = new URL(candidate);
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return "";
+    }
+    const sensitiveQueryMarkers = ["token", "secret", "password", "api_key", "apikey", "credential", "signature"];
+    const hasSensitiveQuery = Array.from(parsed.searchParams.keys()).some((key) => {
+      const normalizedKey = key.toLowerCase().replace(/-/g, "_");
+      return sensitiveQueryMarkers.some((marker) => normalizedKey.includes(marker));
+    });
+    if (hasSensitiveQuery) return "";
+  } catch {
+    return "";
+  }
+  return candidate;
+}
+
+function dedupeById<T extends { id: string }>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.id || JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function compareRiskThenTime<T extends { riskScore: number; eventTime: string }>(a: T, b: T) {
+  if (b.riskScore !== a.riskScore) return b.riskScore - a.riskScore;
+  return Date.parse(b.eventTime || "0") - Date.parse(a.eventTime || "0");
+}
+
+function scoreSeverity(score: number) {
+  if (score >= 90) return "critical";
+  if (score >= 75) return "high";
+  if (score >= 45) return "medium";
+  return "low";
+}
+
+function normalizeSeverity(value: unknown) {
+  const severity = asText(value, "info").toLowerCase();
+  if (["critical", "high", "medium", "low", "info"].includes(severity)) return severity;
+  return severity.includes("error") || severity.includes("warn") ? "medium" : "info";
+}
+
+function severityDefaultScore(value: unknown) {
+  const severity = normalizeSeverity(value);
+  if (severity === "critical") return 95;
+  if (severity === "high") return 82;
+  if (severity === "medium") return 55;
+  if (severity === "low") return 28;
+  return 12;
+}
+
+function formatTime(value: string) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "n/a";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(time));
+}
+
+function formatMoney(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value >= 100 ? 0 : 2,
+  }).format(value || 0);
+}
+
+function labelize(value: string) {
+  if (!value) return "Unknown";
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asNumber(value: unknown, fallback = 0) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function asOptionalNumber(value: unknown) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : undefined;
+}
+
+function asText(value: unknown, fallback = "") {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}

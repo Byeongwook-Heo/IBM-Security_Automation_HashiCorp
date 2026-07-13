@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: krr-recommendation-export
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: krr-recommendation-export
+    app.kubernetes.io/part-of: information-security-portal
+    optimization.security-lab/mode: recommendation-only
+  annotations:
+    optimization.security-lab/output: stdout-json
+spec:
+  schedule: "17 */6 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: krr-recommendation-export
+        optimization.security-lab/mode: recommendation-only
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: krr-recommendation-export
+            app.kubernetes.io/part-of: information-security-portal
+            optimization.security-lab/mode: recommendation-only
+        spec:
+          serviceAccountName: krr-readonly
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: krr
+              image: robustadev/krr:v1.28.0
+              imagePullPolicy: IfNotPresent
+              command: ["python", "krr.py"]
+              args:
+                - simple
+                - --namespace
+                - $(POD_NAMESPACE)
+                - --formatter
+                - json
+                - --prometheus-url
+                - $(PROMETHEUS_URL)
+                - --allow-hpa
+                - --logtostderr
+                - --max-workers
+                - "3"
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: PROMETHEUS_URL
+                  value: http://security-prometheus-server.security-lab.svc.cluster.local:80
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CACHE_HOME
+                  value: /tmp/.cache
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

@@ -233,6 +233,19 @@ reports:
 ELASTIC_LIVE=true scripts/run-application-risk-scan.sh
 ```
 
+Install or reconcile the six-hour EKS Fargate scanner and run its immediate QA
+Job:
+
+```bash
+scripts/deploy-application-risk-cronjob.sh
+```
+
+The CronJob clones the public repository without credentials, runs
+digest-pinned Trivy, Semgrep, and Syft images, and reads only the dedicated
+application-risk `create_doc` API key from a Kubernetes Secret. It has no
+service-account token and uses stable document IDs so repeated findings return
+as duplicates instead of increasing the active signal count.
+
 Normalize one or more read-only Vault PKI JSON exports first:
 
 ```bash

@@ -1,0 +1,259 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: application-risk-scan
+  namespace: security-lab
+spec:
+  schedule: "23 */6 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: application-risk-scan
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: clone
+              image: alpine/git:2.52.0@sha256:4a0e72d49596a1f5d3701aeedafdadc5c0da4062be4657c7bdc4017387f591cc
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  git clone --depth 1 --single-branch --branch "$REPOSITORY_REF" "$REPOSITORY_URL" /workspace/repo
+                  mkdir -p /workspace/reports /workspace/signals
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: REPOSITORY_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: application-risk-scan-settings
+                      key: repository-url
+                - name: REPOSITORY_REF
+                  valueFrom:
+                    configMapKeyRef:
+                      name: application-risk-scan-settings
+                      key: repository-ref
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+                - name: runtime
+                  mountPath: /tmp
+            - name: trivy
+              image: aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08
+              imagePullPolicy: IfNotPresent
+              command: ["trivy"]
+              args:
+                - fs
+                - --quiet
+                - --db-repository
+                - public.ecr.aws/aquasecurity/trivy-db:2
+                - --scanners
+                - vuln
+                - --format
+                - json
+                - --output
+                - /workspace/reports/trivy.json
+                - --skip-dirs
+                - .terraform
+                - --skip-dirs
+                - node_modules
+                - --skip-dirs
+                - dist
+                - /workspace/repo
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: TRIVY_CACHE_DIR
+                  value: /cache
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+                - name: scanner-cache
+                  mountPath: /cache
+                - name: runtime
+                  mountPath: /tmp
+            - name: semgrep
+              image: semgrep/semgrep:1.169.0@sha256:2b33f46ba66cf8cc2ad59ccfa7d22951fd00c632c38f1339e84ec8e6e641a942
+              imagePullPolicy: IfNotPresent
+              command: ["semgrep"]
+              args:
+                - scan
+                - --config
+                - p/security-audit
+                - --metrics
+                - "off"
+                - --json
+                - --output
+                - /workspace/reports/semgrep.json
+                - --exclude
+                - node_modules
+                - --exclude
+                - dist
+                - --exclude
+                - terraform/**/.terraform
+                - /workspace/repo
+              env:
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+                - name: runtime
+                  mountPath: /tmp
+            - name: syft
+              image: anchore/syft:v1.46.0@sha256:473a60e3a58e29aca3aedb3e99e787bb4ef273917e44d10fcbea4330a07320bb
+              imagePullPolicy: IfNotPresent
+              args:
+                - dir:/workspace/repo
+                - --exclude
+                - "**/node_modules/**"
+                - --exclude
+                - "**/dist/**"
+                - --exclude
+                - "**/.terraform/**"
+                - -o
+                - json=/workspace/reports/syft.json
+              env:
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+                - name: runtime
+                  mountPath: /tmp
+          containers:
+            - name: normalize-and-ingest
+              image: public.ecr.aws/docker/library/python:3.13.5-alpine3.22@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  python /opt/scanner/generate-application-risk-signals.py \
+                    --trivy-json /workspace/reports/trivy.json \
+                    --semgrep-json /workspace/reports/semgrep.json \
+                    --syft-json /workspace/reports/syft.json \
+                    --output-dir /workspace/signals \
+                    --app-id ibm-security-automation \
+                    --app-name ibm-security-automation \
+                    --environment lab \
+                    --cluster ibm-hc-lab-test-eks \
+                    --namespace security-lab \
+                    --repository Byeongwook-Heo/IBM-Security_Automation_HashiCorp
+                  python /opt/scanner/application-risk-cron-ingest.py
+              env:
+                - name: ELASTIC_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: application-risk-scan-settings
+                      key: elastic-url
+                - name: ELASTIC_DATA_STREAM
+                  valueFrom:
+                    configMapKeyRef:
+                      name: application-risk-scan-settings
+                      key: data-stream
+                - name: ELASTIC_API_KEY_FILE
+                  value: /var/run/application-risk/api-key
+                - name: SIGNAL_DIR
+                  value: /workspace/signals
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: workspace
+                  mountPath: /workspace
+                - name: scanner-scripts
+                  mountPath: /opt/scanner
+                  readOnly: true
+                - name: elastic-api-key
+                  mountPath: /var/run/application-risk
+                  readOnly: true
+                - name: runtime
+                  mountPath: /tmp
+          volumes:
+            - name: workspace
+              emptyDir: {}
+            - name: scanner-cache
+              emptyDir: {}
+            - name: runtime
+              emptyDir: {}
+            - name: scanner-scripts
+              configMap:
+                name: application-risk-scan-scripts
+                defaultMode: 0550
+            - name: elastic-api-key
+              secret:
+                secretName: application-risk-elastic-ingest
+                defaultMode: 0440

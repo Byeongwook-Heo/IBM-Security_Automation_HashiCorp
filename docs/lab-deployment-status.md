@@ -67,8 +67,11 @@ metadata. StackStorm remains disabled and review-only by design.
   Events webhook both completed successfully. Both retained
   `remediation_execution=blocked` and the human-review delay.
 - KEDA operator, metrics API server, and admission webhook are Ready.
-- The latest live application-risk scan indexed 202 signals: 178 Polaris and
-  24 Syft. At verification time the portal held 206 signals, reported a score
+- The expanded live application-risk scan indexed 202 signals: 178 Polaris and
+  24 Syft. A six-hour EKS CronJob now runs the Trivy, Semgrep, and Syft baseline
+  with digest-pinned images. Its first corrected QA run indexed 6 signals and
+  an immediate repeat reported 6 duplicates and 0 new documents. At final
+  verification the portal held 215 signals, reported a score
   of 75/100, and showed 15 open critical signals. Trivy secret scanning found
   no secrets in the repository.
 - Terraform Enterprise database-password drift caused by RDS managed-secret
@@ -105,6 +108,8 @@ metadata. StackStorm remains disabled and review-only by design.
   `scripts/migrate-lab-terraform-state-to-s3.sh`
 - Scan Trivy/Semgrep/Syft and optionally Vault PKI, then ingest application
   risk signals: `scripts/run-application-risk-scan.sh`
+- Deploy the EKS application-risk scan CronJob and run a live QA Job:
+  `scripts/deploy-application-risk-cronjob.sh`
 
 ## Vault Radar Status
 
@@ -191,16 +196,16 @@ external API reported database `ok`.
 - Vault Radar AWS lab inventory scan on 2026-07-14 covered 26 EC2 instances,
   16 allowlisted user-data exports, and 1 EKS cluster. It indexed 16 normalized
   findings without retaining or printing raw secret-like content.
-- Continuous HCP Vault Radar source assignment, an application-risk scheduler,
-  and live Vault PKI metadata still require external credentials or approval.
+- Continuous HCP Vault Radar source assignment and live Vault PKI metadata
+  still require external credentials or approval.
   Karpenter is intentionally not applicable to this Fargate-only cluster.
 
 ## Final QA Snapshot (2026-07-14)
 
-- Repository validation passed: 113 Python tests, 3 frontend tests, TypeScript
+- Repository validation passed: 117 Python tests, 3 frontend tests, TypeScript
   production build, shell syntax and ShellCheck, Terraform formatting plus
   validation for lab/prod-like/cross-namespace environments.
-- Kubernetes QA found 31 resources across 15 files: 25 schema-valid and 6
+- Kubernetes QA found 32 resources across 16 files: 26 schema-valid and 6
   custom-resource schemas skipped, with 0 invalid resources and 0 errors. The
   offline dry-run parser also passed all 15 manifest files.
 - Portal and observability runtime packaging smoke tests passed.

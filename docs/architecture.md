@@ -48,6 +48,8 @@ The rows below reflect the live inventory re-verified on 2026-07-14.
    dedicated least-privilege API key.
 7. The application-risk pipeline normalizes open-source scanner, Kubernetes,
    Vault PKI, backup, and resilience metadata before portal or Elastic ingest.
+   A six-hour EKS Fargate CronJob runs the Trivy, Semgrep, and Syft baseline
+   with digest-pinned images and stable document IDs.
 
 Terraform state is stored at
 `s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`

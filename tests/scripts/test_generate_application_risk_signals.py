@@ -107,3 +107,57 @@ def test_generate_application_risk_signals_from_scanner_outputs(tmp_path):
     assert all(signal["risk"]["formula_version"] == "ars-v1" for signal in signals)
     assert all(signal["risk"]["reasons"] for signal in signals)
     assert any(signal["finding"]["category"] == "certificate" for signal in signals)
+
+
+def test_signal_files_do_not_collide_for_repeated_rules_or_package_names(tmp_path):
+    semgrep = tmp_path / "semgrep.json"
+    semgrep.write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "check_id": "python.security.example",
+                        "path": "src/example.py",
+                        "start": {"line": line},
+                        "extra": {"severity": "WARNING", "message": "Review this line"},
+                    }
+                    for line in (10, 20)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    syft = tmp_path / "syft.json"
+    syft.write_text(
+        json.dumps(
+            {
+                "artifacts": [
+                    {"id": artifact_id, "name": "actions/checkout", "version": "v4", "type": "github-action"}
+                    for artifact_id in ("artifact-a", "artifact-b")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "signals"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--semgrep-json",
+            str(semgrep),
+            "--syft-json",
+            str(syft),
+            "--output-dir",
+            str(output_dir),
+            "--observed-at",
+            "2026-07-14T06:00:00Z",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout)["signal_count"] == 4
+    assert len(list(output_dir.glob("*.json"))) == 4

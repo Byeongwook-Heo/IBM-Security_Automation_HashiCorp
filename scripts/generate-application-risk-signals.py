@@ -411,6 +411,7 @@ def semgrep_signals(path: Path, args: argparse.Namespace) -> list[dict[str, Any]
         check_id = item.get("check_id") or stable_id(item.get("path"), item.get("start"))
         file_path = item.get("path") or "unknown-file"
         line = (item.get("start") or {}).get("line")
+        finding_id = f"{check_id}.{stable_id(file_path, line)}"
         title = extra.get("message") or check_id
         cwe = metadata.get("cwe") or metadata.get("cwes") or []
         if isinstance(cwe, str):
@@ -423,7 +424,7 @@ def semgrep_signals(path: Path, args: argparse.Namespace) -> list[dict[str, Any]
                 app=app,
                 resource={"kind": "source_file", "name": file_path},
                 finding={
-                    "id": check_id,
+                    "id": finding_id,
                     "title": title[:240],
                     "description": title[:900],
                     "category": "code_security",
@@ -448,10 +449,11 @@ def syft_signals(path: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
     app = app_context(args)
     artifacts = payload.get("artifacts") or []
     signals: list[dict[str, Any]] = []
-    for artifact in artifacts[: args.syft_max_packages]:
+    for index, artifact in enumerate(artifacts[: args.syft_max_packages]):
         name = artifact.get("name") or "unknown-package"
         version = artifact.get("version") or ""
         package_type = artifact.get("type") or ""
+        artifact_id = artifact.get("id") or stable_id(name, version, package_type, index)
         signals.append(
             base_signal(
                 source_name="syft",
@@ -460,7 +462,7 @@ def syft_signals(path: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
                 app=app,
                 resource={"kind": "sbom_package", "name": name, "namespace": args.namespace},
                 finding={
-                    "id": f"sbom.package.{name}",
+                    "id": f"sbom.package.{stable_id(name, version, package_type, artifact_id)}",
                     "title": f"SBOM package inventory captured for {name}",
                     "description": f"Syft reported package {name} {version}".strip(),
                     "category": "sbom",
@@ -1045,14 +1047,19 @@ def chaos_signals(path: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
 
 def write_signals(signals: list[dict[str, Any]], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    written_ids: set[str] = set()
     for signal in signals:
         sanitized_signal = sanitize_output(signal)
-        output_path = output_dir / f"{sanitized_signal['signal_id']}.json"
+        signal_id = str(sanitized_signal["signal_id"])
+        if signal_id in written_ids:
+            raise RuntimeError(f"Duplicate application-risk signal_id: {signal_id}")
+        written_ids.add(signal_id)
+        output_path = output_dir / f"{signal_id}.json"
         output_path.write_text(
             json.dumps(sanitized_signal, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    print(json.dumps({"output_dir": str(output_dir), "signal_count": len(signals)}))
+    print(json.dumps({"output_dir": str(output_dir), "signal_count": len(written_ids)}))
 
 
 def main() -> int:

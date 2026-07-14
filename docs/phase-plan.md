@@ -118,8 +118,10 @@ recommendation collectors are installed without automatic mutation.
 ### Phase 6: Concert Replacement Portal
 
 Status: live for Trivy/Syft/Semgrep/Polaris collection and portal scoring. The
-latest scan indexed 202 signals; the portal reported 206 total signals and a
-75/100 score at verification time. Live Vault PKI input remains external.
+expanded scan indexed 202 signals, and a digest-pinned EKS CronJob runs the
+Trivy/Semgrep/Syft baseline every six hours with stable duplicate suppression.
+The portal reported 215 total signals and a 75/100 score at final verification.
+Live Vault PKI input remains external.
 
 - Collect Trivy, Grype, Syft, Semgrep, kube-bench, Polaris, certificate, backup, and resilience results.
 - Build an application risk score in the Information Security Portal.

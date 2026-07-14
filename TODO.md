@@ -5,8 +5,6 @@
   and S3 with an approved TFE organization/token and AWS read role.
 - EXTERNAL INPUT: export approved read-only Vault PKI and cert-manager metadata
   for the live certificate-risk signal.
-- Choose an AWS-hosted schedule for the application-risk scan. OpenCost already
-  runs as an EKS CronJob.
 - HUMAN REVIEW REQUIRED: AWS Control Tower/account vending, SCP enforcement, and Object Lock retention modes.
 - HUMAN REVIEW REQUIRED: Vault root token break-glass storage and unseal/HSM strategy.
 - HUMAN REVIEW REQUIRED: Boundary target exposure for admin consoles and databases.

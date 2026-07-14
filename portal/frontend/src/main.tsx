@@ -1,6 +1,26 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Languages, Moon, Sun } from "lucide-react";
+import {
+  Activity,
+  Database,
+  ExternalLink,
+  FileBadge2,
+  Gauge,
+  KeyRound,
+  Languages,
+  LayoutDashboard,
+  ListTree,
+  Moon,
+  Network,
+  Package,
+  Radar,
+  Search,
+  ShieldCheck,
+  Sun,
+  UserRound,
+  Workflow,
+  type LucideIcon,
+} from "lucide-react";
 import { PreferencesProvider, usePreferences } from "./i18n";
 import "./style.css";
 
@@ -291,6 +311,23 @@ type IconName =
   | "package"
   | "certificate"
   | "cluster";
+
+const ICON_COMPONENTS: Record<IconName, LucideIcon> = {
+  gauge: LayoutDashboard,
+  radar: Radar,
+  key: KeyRound,
+  database: Database,
+  stream: ListTree,
+  search: Search,
+  activity: Activity,
+  shield: ShieldCheck,
+  external: ExternalLink,
+  user: UserRound,
+  workflow: Workflow,
+  package: Package,
+  certificate: FileBadge2,
+  cluster: Network,
+};
 
 const ENDPOINTS: Array<{ key: ApiKey; label: string; path: string }> = [
   { key: "summary", label: "Summary", path: "/api/dashboard/summary" },
@@ -960,6 +997,7 @@ function PortalApp() {
           value={`${dashboard.summary.security_score}`}
           trend={t("Risk posture")}
           severity={scoreSeverity(100 - dashboard.summary.security_score)}
+          variant="score"
         />
         <RiskCard
           icon="radar"
@@ -1202,7 +1240,7 @@ function Shell({
       <aside className="sidebar" aria-label={t("Security portal navigation")}>
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">
-            IS
+            <ShieldCheck size={23} strokeWidth={2} />
           </span>
           <div>
             <strong>{t("Security Portal")}</strong>
@@ -1342,24 +1380,44 @@ function RiskCard({
   value,
   trend,
   severity,
+  variant = "metric",
 }: {
   icon: IconName;
   label: string;
   value: string;
   trend: string;
   severity: string;
+  variant?: "metric" | "score";
 }) {
   const { label: localizedLabel } = usePreferences();
+  const score = Math.max(0, Math.min(100, Number(value) || 0));
   return (
-    <article className={`risk-card severity-border severity-border--${severity}`}>
+    <article className={`risk-card risk-card--${variant} severity-border severity-border--${severity}`}>
       <div className="risk-card__top">
-        <span className="icon-box" aria-hidden="true">
-          <Icon name={icon} />
-        </span>
+        <div className="risk-card__title">
+          <span className="icon-box" aria-hidden="true">
+            <Icon name={icon} />
+          </span>
+          <span>{label}</span>
+        </div>
         <span className={`severity-pill severity-pill--${severity}`}>{localizedLabel(severity)}</span>
       </div>
-      <div className="risk-card__metric">{value}</div>
-      <div className="risk-card__label">{label}</div>
+      {variant === "score" ? (
+        <div
+          className="score-gauge"
+          role="img"
+          aria-label={`${label} ${score} / 100`}
+          style={{ "--score": score } as React.CSSProperties}
+        >
+          <span className="score-gauge__arc" aria-hidden="true" />
+          <span className="score-gauge__value">
+            <strong>{score}</strong>
+            <small>/100</small>
+          </span>
+        </div>
+      ) : (
+        <div className="risk-card__metric">{value}</div>
+      )}
       <div className="risk-card__trend">{trend}</div>
     </article>
   );
@@ -1407,7 +1465,7 @@ function FindingsTable({
 
   return (
     <div className="table-wrap">
-      <table>
+      <table className="findings-table">
         <caption>{t("Vault Radar findings")}</caption>
         <thead>
           <tr>
@@ -1472,7 +1530,7 @@ function DbAuditTable({
 
   return (
     <div className="table-wrap">
-      <table>
+      <table className="audit-table">
         <caption>{t("Database audit activity")}</caption>
         <thead>
           <tr>
@@ -2011,7 +2069,17 @@ function DeepLinkButton({ href, label }: { href?: string; label: string }) {
   const { t } = usePreferences();
   const target = externalHref(href);
   if (!target) {
-    return <span className="icon-link icon-link--disabled" aria-label={t("{label} unavailable", { label })} />;
+    const unavailableLabel = t("{label} unavailable", { label });
+    return (
+      <span
+        className="icon-link icon-link--disabled"
+        role="img"
+        aria-label={unavailableLabel}
+        title={unavailableLabel}
+      >
+        <Icon name="external" />
+      </span>
+    );
   }
 
   return (
@@ -2095,154 +2163,8 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 }
 
 function Icon({ name }: { name: IconName }) {
-  const common = {
-    width: 18,
-    height: 18,
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.8,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    "aria-hidden": true,
-  };
-
-  if (name === "gauge") {
-    return (
-      <svg {...common}>
-        <path d="M4 14a8 8 0 0 1 16 0" />
-        <path d="M12 14l4-5" />
-        <path d="M7 18h10" />
-      </svg>
-    );
-  }
-
-  if (name === "radar") {
-    return (
-      <svg {...common}>
-        <circle cx="12" cy="12" r="8" />
-        <circle cx="12" cy="12" r="3" />
-        <path d="M12 12l6-6" />
-        <path d="M12 4v2M20 12h-2M12 20v-2M4 12h2" />
-      </svg>
-    );
-  }
-
-  if (name === "key") {
-    return (
-      <svg {...common}>
-        <circle cx="8" cy="12" r="3" />
-        <path d="M11 12h9" />
-        <path d="M16 12v3M19 12v2" />
-      </svg>
-    );
-  }
-
-  if (name === "database") {
-    return (
-      <svg {...common}>
-        <ellipse cx="12" cy="6" rx="7" ry="3" />
-        <path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
-        <path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" />
-      </svg>
-    );
-  }
-
-  if (name === "stream") {
-    return (
-      <svg {...common}>
-        <path d="M5 7h8a4 4 0 0 1 0 8H4" />
-        <path d="M17 7h2M17 15h2" />
-        <path d="M4 19h9a5 5 0 0 0 0-10H5" />
-      </svg>
-    );
-  }
-
-  if (name === "search") {
-    return (
-      <svg {...common}>
-        <circle cx="11" cy="11" r="6" />
-        <path d="M16 16l4 4" />
-      </svg>
-    );
-  }
-
-  if (name === "shield") {
-    return (
-      <svg {...common}>
-        <path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3Z" />
-        <path d="M9 12l2 2 4-5" />
-      </svg>
-    );
-  }
-
-  if (name === "external") {
-    return (
-      <svg {...common}>
-        <path d="M9 5h10v10" />
-        <path d="M19 5l-9 9" />
-        <path d="M7 9H5v10h10v-2" />
-      </svg>
-    );
-  }
-
-  if (name === "user") {
-    return (
-      <svg {...common}>
-        <circle cx="12" cy="8" r="4" />
-        <path d="M4 20c1.7-3.2 4.2-5 8-5s6.3 1.8 8 5" />
-      </svg>
-    );
-  }
-
-  if (name === "workflow") {
-    return (
-      <svg {...common}>
-        <path d="M6 6h5v5H6z" />
-        <path d="M13 13h5v5h-5z" />
-        <path d="M11 8h3a2 2 0 0 1 2 2v3" />
-        <path d="M8 11v3a2 2 0 0 0 2 2h3" />
-      </svg>
-    );
-  }
-
-  if (name === "package") {
-    return (
-      <svg {...common}>
-        <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
-        <path d="M4.5 7.8L12 12l7.5-4.2" />
-        <path d="M12 12v9" />
-      </svg>
-    );
-  }
-
-  if (name === "certificate") {
-    return (
-      <svg {...common}>
-        <path d="M7 4h10v12H7z" />
-        <path d="M9 8h6M9 11h4" />
-        <path d="M10 16l-1 4 3-2 3 2-1-4" />
-      </svg>
-    );
-  }
-
-  if (name === "cluster") {
-    return (
-      <svg {...common}>
-        <circle cx="12" cy="5" r="3" />
-        <circle cx="6" cy="17" r="3" />
-        <circle cx="18" cy="17" r="3" />
-        <path d="M10.5 7.5L7.5 14M13.5 7.5l3 6.5M9 17h6" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg {...common}>
-      <path d="M4 17l5-5 4 4 7-9" />
-      <path d="M4 20h16" />
-    </svg>
-  );
+  const Component = ICON_COMPONENTS[name] ?? Gauge;
+  return <Component aria-hidden="true" size={18} strokeWidth={1.8} />;
 }
 
 async function fetchJson(path: string, signal: AbortSignal): Promise<unknown> {

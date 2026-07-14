@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Languages, Moon, Sun } from "lucide-react";
+import { PreferencesProvider, usePreferences } from "./i18n";
 import "./style.css";
 
 const API_BASE =
@@ -268,7 +270,11 @@ type StreamHealth = {
 
 type LoadState =
   | { status: "loading"; data: null; message: null }
-  | { status: "ready"; data: DashboardData; message: string | null };
+  | {
+      status: "ready";
+      data: DashboardData;
+      message: { key: string; params?: Record<string, string | number> } | null;
+    };
 
 type IconName =
   | "gauge"
@@ -758,6 +764,20 @@ const EMPTY_DASHBOARD: DashboardData = {
 };
 
 export function App() {
+  return (
+    <PreferencesProvider>
+      <PortalApp />
+    </PreferencesProvider>
+  );
+}
+
+function PortalApp() {
+  const {
+    locale,
+    t,
+    label: localizedLabel,
+    formatMoney: localizedMoney,
+  } = usePreferences();
   const [loadState, setLoadState] = useState<LoadState>({
     status: "loading",
     data: null,
@@ -776,8 +796,8 @@ export function App() {
   const [isRunningDryRun, setIsRunningDryRun] = useState(false);
 
   useEffect(() => {
-    document.title = "Information Security Portal";
-  }, []);
+    document.title = t("Information Security Portal");
+  }, [locale, t]);
 
   useEffect(() => {
     let isActive = true;
@@ -803,11 +823,17 @@ export function App() {
 
       const data = createDashboardData(responses);
       const failed = responses.filter((response) => response.error);
-      const message =
+      const message: LoadState["message"] =
         failed.length > 0
-          ? `${failed.length} API ${failed.length === 1 ? "source" : "sources"} unavailable. Showing fallback telemetry where needed.`
+          ? {
+              key:
+                failed.length === 1
+                  ? "{count} API source unavailable. Showing fallback telemetry where needed."
+                  : "{count} API sources unavailable. Showing fallback telemetry where needed.",
+              params: { count: failed.length },
+            }
           : data.isFallback
-            ? "Live streams are quiet. Showing fallback telemetry."
+            ? { key: "Live streams are quiet. Showing fallback telemetry." }
             : null;
 
       setLoadState({ status: "ready", data, message });
@@ -897,7 +923,7 @@ export function App() {
       });
       setDryRunResult(result);
     } catch (error) {
-      setDryRunError(error instanceof Error ? error.message : "Dry-run request failed");
+      setDryRunError(error instanceof Error ? error.message : t("Dry-run request failed"));
     } finally {
       setIsRunningDryRun(false);
     }
@@ -908,8 +934,8 @@ export function App() {
       <Shell dashboard={dashboard} kibanaHref="#stream-health">
         <section className="state-panel" aria-live="polite">
           <div className="spinner" aria-hidden="true" />
-          <h1>Loading telemetry</h1>
-          <p>Preparing the security workspace.</p>
+          <h1>{t("Loading telemetry")}</h1>
+          <p>{t("Preparing the security workspace.")}</p>
         </section>
       </Shell>
     );
@@ -920,47 +946,49 @@ export function App() {
       {loadState.message ? (
         <div className="notice" role="status">
           <span className="status-dot status-dot--warning" aria-hidden="true" />
-          <span>{loadState.message}</span>
+          <span>{t(loadState.message.key, loadState.message.params)}</span>
           <button className="text-button" type="button" onClick={() => window.location.reload()}>
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : null}
 
-      <section className="summary-grid" aria-label="Security summary">
+      <section className="summary-grid" aria-label={t("Security summary")}>
         <RiskCard
           icon="shield"
-          label="Security score"
+          label={t("Security score")}
           value={`${dashboard.summary.security_score}`}
-          trend="Risk posture"
+          trend={t("Risk posture")}
           severity={scoreSeverity(100 - dashboard.summary.security_score)}
         />
         <RiskCard
           icon="radar"
-          label="Critical findings"
+          label={t("Critical findings")}
           value={`${dashboard.summary.critical_findings}`}
-          trend={`${dashboard.summary.exposed_secrets} exposed secrets`}
+          trend={t("{count} exposed secrets", { count: dashboard.summary.exposed_secrets })}
           severity="critical"
         />
         <RiskCard
           icon="database"
-          label="Data risk"
+          label={t("Data risk")}
           value={`${dashboard.summary.data_risk}`}
-          trend={`${dashboard.summary.db_audit_events ?? dashboard.dbEvents.length} DB audit events`}
+          trend={t("{count} DB audit events", {
+            count: dashboard.summary.db_audit_events ?? dashboard.dbEvents.length,
+          })}
           severity={scoreSeverity(dashboard.summary.data_risk)}
         />
         <RiskCard
           icon="activity"
-          label="Open offenses"
+          label={t("Open offenses")}
           value={`${dashboard.summary.open_offenses}`}
-          trend={`${dashboard.summary.pending_approvals} pending approvals`}
+          trend={t("{count} pending approvals", { count: dashboard.summary.pending_approvals })}
           severity={dashboard.summary.open_offenses > 0 ? "high" : "low"}
         />
         <RiskCard
           icon="package"
-          label="Application risk"
+          label={t("Application risk")}
           value={`${dashboard.appRiskSummary.score}`}
-          trend={`${dashboard.appRiskSummary.signalCount} scanner signals`}
+          trend={t("{count} scanner signals", { count: dashboard.appRiskSummary.signalCount })}
           severity={dashboard.appRiskSummary.scoreBand}
         />
       </section>
@@ -968,10 +996,12 @@ export function App() {
       <section className="investigation-panel" id="vault" aria-labelledby="investigation-title">
         <div className="section-heading">
           <div>
-            <h2 id="investigation-title">Secret -&gt; Vault Credential -&gt; DB Audit</h2>
-            <p>Case timeline</p>
+            <h2 id="investigation-title">{t("Secret -> Vault Credential -> DB Audit")}</h2>
+            <p>{t("Case timeline")}</p>
           </div>
-          <span className="compact-meta">{dashboard.investigation.length} linked events</span>
+          <span className="compact-meta">
+            {t("{count} linked events", { count: dashboard.investigation.length })}
+          </span>
         </div>
         <InvestigationTimeline steps={dashboard.investigation} />
       </section>
@@ -980,23 +1010,23 @@ export function App() {
         <section className="data-panel" id="vault-radar-findings" aria-labelledby="findings-title">
           <div className="section-heading section-heading--controls">
             <div>
-              <h2 id="findings-title">Vault Radar findings</h2>
-              <p>{filteredFindings.length} visible findings</p>
+              <h2 id="findings-title">{t("Vault Radar findings")}</h2>
+              <p>{t("{count} visible findings", { count: filteredFindings.length })}</p>
             </div>
             <div className="control-row" role="search">
               <SearchBox
-                label="Search findings"
+                label={t("Search findings")}
                 value={findingSearch}
                 onChange={setFindingSearch}
               />
               <FilterSelect
-                label="Severity"
+                label={t("Severity")}
                 value={severityFilter}
                 options={severityOptions}
                 onChange={setSeverityFilter}
               />
               <FilterSelect
-                label="Source"
+                label={t("Source")}
                 value={sourceFilter}
                 options={sourceOptions}
                 onChange={setSourceFilter}
@@ -1015,13 +1045,13 @@ export function App() {
         <section className="data-panel data-panel--wide" id="audit" aria-labelledby="db-audit-title">
           <div className="section-heading section-heading--controls">
             <div>
-              <h2 id="db-audit-title">DB Audit Activity</h2>
-              <p>{filteredDbEvents.length} visible pgAudit rows</p>
+              <h2 id="db-audit-title">{t("DB Audit Activity")}</h2>
+              <p>{t("{count} visible pgAudit rows", { count: filteredDbEvents.length })}</p>
             </div>
             <div className="control-row" role="search">
-              <SearchBox label="Search DB audit" value={auditSearch} onChange={setAuditSearch} />
+              <SearchBox label={t("Search DB audit")} value={auditSearch} onChange={setAuditSearch} />
               <FilterSelect
-                label="Source"
+                label={t("Source")}
                 value={auditSourceFilter}
                 options={auditSourceOptions}
                 onChange={setAuditSourceFilter}
@@ -1039,10 +1069,12 @@ export function App() {
       <section className="vault-radar-sources-panel" id="vault-radar-sources" aria-labelledby="vault-radar-sources-title">
         <div className="section-heading">
           <div>
-            <h2 id="vault-radar-sources-title">Vault Radar Scan Sources</h2>
-            <p>Git, TFE, S3, AWS Parameter Store, and EC2/EKS inventory targets</p>
+            <h2 id="vault-radar-sources-title">{t("Vault Radar Scan Sources")}</h2>
+            <p>{t("Git, TFE, S3, AWS Parameter Store, and EC2/EKS inventory targets")}</p>
           </div>
-          <span className="compact-meta">{dashboard.vaultRadarSources.length} sources</span>
+          <span className="compact-meta">
+            {t("{count} sources", { count: dashboard.vaultRadarSources.length })}
+          </span>
         </div>
         <VaultRadarSourcesPanel sources={dashboard.vaultRadarSources} />
       </section>
@@ -1050,8 +1082,8 @@ export function App() {
       <section className="risk-signals-panel" id="application-risk" aria-labelledby="application-risk-title">
         <div className="section-heading">
           <div>
-            <h2 id="application-risk-title">Application Risk Score</h2>
-            <p>Trivy, Semgrep, Syft, and Vault PKI signals</p>
+            <h2 id="application-risk-title">{t("Application Risk Score")}</h2>
+            <p>{t("Trivy, Semgrep, Syft, and Vault PKI signals")}</p>
           </div>
           <span className={`severity-pill severity-pill--${dashboard.appRiskSummary.scoreBand}`}>
             {dashboard.appRiskSummary.score} / 100
@@ -1063,10 +1095,12 @@ export function App() {
       <section className="automation-panel" id="automation" aria-labelledby="automation-title">
         <div className="section-heading">
           <div>
-            <h2 id="automation-title">Dry-run Automation</h2>
-            <p>Argo Workflows/Events and StackStorm review actions</p>
+            <h2 id="automation-title">{t("Dry-run Automation")}</h2>
+            <p>{t("Argo Workflows/Events and StackStorm review actions")}</p>
           </div>
-          <span className="compact-meta">{dashboard.dryRunActions.length} actions</span>
+          <span className="compact-meta">
+            {t("{count} actions", { count: dashboard.dryRunActions.length })}
+          </span>
         </div>
         <AutomationPanel
           actions={dashboard.dryRunActions}
@@ -1081,10 +1115,10 @@ export function App() {
       <section className="observability-panel" id="observability" aria-labelledby="observability-title">
         <div className="section-heading">
           <div>
-            <h2 id="observability-title">Observability Targets</h2>
-            <p>Collection signals and console navigation for the lab services</p>
+            <h2 id="observability-title">{t("Observability Targets")}</h2>
+            <p>{t("Collection signals and console navigation for the lab services")}</p>
           </div>
-          <span className="compact-meta">{labelize(dashboard.kubernetesPlatform.mode)}</span>
+          <span className="compact-meta">{localizedLabel(dashboard.kubernetesPlatform.mode)}</span>
         </div>
         <ObservabilityPanel
           targets={dashboard.observabilityTargets}
@@ -1096,11 +1130,13 @@ export function App() {
       <section className="optimization-panel" id="kubernetes-optimization" aria-labelledby="optimization-title">
         <div className="section-heading">
           <div>
-            <h2 id="optimization-title">Kubernetes Optimization</h2>
-            <p>OpenCost, KRR, Goldilocks, VPA/HPA, Karpenter, and KEDA signals</p>
+            <h2 id="optimization-title">{t("Kubernetes Optimization")}</h2>
+            <p>{t("OpenCost, KRR, Goldilocks, VPA/HPA, Karpenter, and KEDA signals")}</p>
           </div>
           <span className="compact-meta">
-            {formatMoney(dashboard.kubernetesCostSummary.potentialMonthlySavings)} potential savings
+            {t("{amount} potential savings", {
+              amount: localizedMoney(dashboard.kubernetesCostSummary.potentialMonthlySavings),
+            })}
           </span>
         </div>
         <KubernetesOptimizationPanel
@@ -1121,10 +1157,12 @@ export function App() {
       <section className="stream-panel" id="stream-health" aria-labelledby="stream-health-title">
         <div className="section-heading">
           <div>
-            <h2 id="stream-health-title">Elastic Data Stream Health</h2>
-            <p>{dashboard.summary.elastic_enabled ? "Elastic enabled" : "Mock-compatible mode"}</p>
+            <h2 id="stream-health-title">{t("Elastic Data Stream Health")}</h2>
+            <p>{t(dashboard.summary.elastic_enabled ? "Elastic enabled" : "Mock-compatible mode")}</p>
           </div>
-          <span className="compact-meta">{dashboard.summary.elastic_events ?? 0} indexed events</span>
+          <span className="compact-meta">
+            {t("{count} indexed events", { count: dashboard.summary.elastic_events ?? 0 })}
+          </span>
         </div>
         <div className="stream-grid">
           {dashboard.streamHealth.map((stream) => (
@@ -1145,6 +1183,7 @@ function Shell({
   kibanaHref: string;
   children: React.ReactNode;
 }) {
+  const { locale, theme, setLocale, setTheme, t, label } = usePreferences();
   const healthState = dashboard.endpointStates.some((endpoint) => endpoint.status === "error")
     ? "degraded"
     : dashboard.summary.elastic_enabled
@@ -1155,39 +1194,41 @@ function Shell({
     ([, status]) => status.image_configured || status.license_configured,
   ).length;
   const externalKibanaHref = externalHref(kibanaHref);
+  const languageLabel = t(locale === "en" ? "Switch to Korean" : "Switch to English");
+  const themeLabel = t(theme === "light" ? "Switch to dark mode" : "Switch to light mode");
 
   return (
     <div className="app-shell">
-      <aside className="sidebar" aria-label="Security portal navigation">
+      <aside className="sidebar" aria-label={t("Security portal navigation")}>
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">
             IS
           </span>
           <div>
-            <strong>Security Portal</strong>
-            <span>Information security</span>
+            <strong>{t("Security Portal")}</strong>
+            <span>{t("Information security")}</span>
           </div>
         </div>
-        <nav className="nav-list" aria-label="Primary">
+        <nav className="nav-list" aria-label={t("Primary")}>
           <a href="#top" className="nav-item nav-item--active">
             <Icon name="gauge" />
-            Dashboard
+            {t("Dashboard")}
           </a>
           <a href="#vault-radar-findings" className="nav-item">
             <Icon name="radar" />
-            Findings
+            {t("Findings")}
           </a>
           <a href="#vault-radar-sources" className="nav-item">
             <Icon name="shield" />
-            Radar Sources
+            {t("Radar Sources")}
           </a>
           <a href="#audit" className="nav-item">
             <Icon name="activity" />
-            Audit
+            {t("Audit")}
           </a>
           <a href="#data-security" className="nav-item">
             <Icon name="database" />
-            Data Security
+            {t("Data Security")}
           </a>
           <a href="#vault" className="nav-item">
             <Icon name="key" />
@@ -1195,19 +1236,19 @@ function Shell({
           </a>
           <a href="#application-risk" className="nav-item">
             <Icon name="package" />
-            App Risk
+            {t("App Risk")}
           </a>
           <a href="#automation" className="nav-item">
             <Icon name="workflow" />
-            Automation
+            {t("Automation")}
           </a>
           <a href="#observability" className="nav-item">
             <Icon name="cluster" />
-            Observability
+            {t("Observability")}
           </a>
           <a href="#kubernetes-optimization" className="nav-item">
             <Icon name="gauge" />
-            Optimization
+            {t("Optimization")}
           </a>
           <a href="#stream-health" className="nav-item">
             <Icon name="stream" />
@@ -1215,32 +1256,56 @@ function Shell({
           </a>
           <a href="#runbooks" className="nav-item">
             <Icon name="shield" />
-            Runbooks
+            {t("Runbooks")}
           </a>
         </nav>
         <div className="sidebar-status">
           <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
           <div>
-            <strong>{labelize(healthState)}</strong>
-            <span>{dashboard.endpointStates.length || ENDPOINTS.length} API sources</span>
+            <strong>{label(healthState)}</strong>
+            <span>{t("{count} API sources", { count: dashboard.endpointStates.length || ENDPOINTS.length })}</span>
           </div>
         </div>
       </aside>
 
       <div className="workspace" id="top">
         <header className="topbar">
-          <div>
-            <h1>Risk Summary</h1>
-            <p>Lab environment telemetry</p>
+          <div className="topbar-title">
+            <h1>{t("Risk Summary")}</h1>
+            <p>{t("Lab environment telemetry")}</p>
           </div>
           <div className="topbar-actions">
+            <div className="preference-controls" role="group" aria-label={t("Display preferences")}>
+              <button
+                className="preference-button preference-button--language"
+                type="button"
+                aria-label={languageLabel}
+                title={languageLabel}
+                onClick={() => setLocale(locale === "en" ? "ko" : "en")}
+              >
+                <Languages size={17} aria-hidden="true" />
+                <span>{locale === "en" ? "한국어" : "English"}</span>
+              </button>
+              <button
+                className="preference-button preference-button--theme"
+                type="button"
+                aria-label={themeLabel}
+                title={themeLabel}
+                onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+              >
+                {theme === "light" ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
+              </button>
+            </div>
             <span className="environment-chip">LAB</span>
             <span className="environment-chip">
-              {configuredEnterprise}/{Math.max(enterpriseEntries.length, 1)} enterprise
+              {t("{configured}/{total} enterprise", {
+                configured: configuredEnterprise,
+                total: Math.max(enterpriseEntries.length, 1),
+              })}
             </span>
             <span className={`health-chip health-chip--${healthState}`}>
               <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
-              {labelize(healthState)}
+              {label(healthState)}
             </span>
             {externalKibanaHref ? (
               <a className="action-button action-button--icon" href={externalKibanaHref} target="_blank" rel="noreferrer">
@@ -1255,16 +1320,16 @@ function Shell({
             )}
             <span className="user-chip">
               <Icon name="user" />
-              SOC Analyst
+              {t("SOC Analyst")}
             </span>
           </div>
         </header>
         <main className="dashboard">{children}</main>
-        <footer className="runbook-anchor" id="runbooks" aria-label="Runbook shortcuts">
-          <strong>Runbooks</strong>
-          <a href="#automation">Automation</a>
-          <a href="#observability">Observability</a>
-          <a href="#kubernetes-optimization">Optimization</a>
+        <footer className="runbook-anchor" id="runbooks" aria-label={t("Runbook shortcuts")}>
+          <strong>{t("Runbooks")}</strong>
+          <a href="#automation">{t("Automation")}</a>
+          <a href="#observability">{t("Observability")}</a>
+          <a href="#kubernetes-optimization">{t("Optimization")}</a>
         </footer>
       </div>
     </div>
@@ -1284,13 +1349,14 @@ function RiskCard({
   trend: string;
   severity: string;
 }) {
+  const { label: localizedLabel } = usePreferences();
   return (
     <article className={`risk-card severity-border severity-border--${severity}`}>
       <div className="risk-card__top">
         <span className="icon-box" aria-hidden="true">
           <Icon name={icon} />
         </span>
-        <span className={`severity-pill severity-pill--${severity}`}>{labelize(severity)}</span>
+        <span className={`severity-pill severity-pill--${severity}`}>{localizedLabel(severity)}</span>
       </div>
       <div className="risk-card__metric">{value}</div>
       <div className="risk-card__label">{label}</div>
@@ -1300,8 +1366,9 @@ function RiskCard({
 }
 
 function InvestigationTimeline({ steps }: { steps: InvestigationStep[] }) {
+  const { t, formatTime: localizedTime } = usePreferences();
   if (steps.length === 0) {
-    return <EmptyState title="No timeline events" detail="No correlated activity is available." />;
+    return <EmptyState title={t("No timeline events")} detail={t("No correlated activity is available.")} />;
   }
 
   return (
@@ -1311,7 +1378,7 @@ function InvestigationTimeline({ steps }: { steps: InvestigationStep[] }) {
           <span className={`timeline__marker timeline__marker--${step.severity}`} aria-hidden="true" />
           <div className="timeline__content">
             <div className="timeline__meta">
-              <span>{formatTime(step.time)}</span>
+              <span>{localizedTime(step.time)}</span>
               <span>{step.source}</span>
             </div>
             <h3>{step.title}</h3>
@@ -1333,22 +1400,23 @@ function FindingsTable({
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
   if (findings.length === 0) {
-    return <EmptyState title="No findings" detail="No Vault Radar rows match the current filters." />;
+    return <EmptyState title={t("No findings")} detail={t("No Vault Radar rows match the current filters.")} />;
   }
 
   return (
     <div className="table-wrap">
       <table>
-        <caption>Vault Radar findings</caption>
+        <caption>{t("Vault Radar findings")}</caption>
         <thead>
           <tr>
-            <th scope="col">Severity</th>
-            <th scope="col">Type</th>
-            <th scope="col">Secret path</th>
-            <th scope="col">Risk</th>
-            <th scope="col">Seen</th>
-            <th scope="col" aria-label="Open" />
+            <th scope="col">{t("Severity")}</th>
+            <th scope="col">{t("Type")}</th>
+            <th scope="col">{t("Secret path")}</th>
+            <th scope="col">{t("Risk")}</th>
+            <th scope="col">{t("Seen")}</th>
+            <th scope="col" aria-label={t("Open")} />
           </tr>
         </thead>
         <tbody>
@@ -1361,24 +1429,24 @@ function FindingsTable({
               <td>
                 <button className="row-button" type="button" onClick={() => onSelect(finding.id)}>
                   <span className={`severity-pill severity-pill--${finding.severity}`}>
-                    {labelize(finding.severity)}
+                    {label(finding.severity)}
                   </span>
                 </button>
               </td>
               <td>
-                <div>{labelize(finding.type)}</div>
-                {finding.subType ? <span className="compact-meta">{labelize(finding.subType)}</span> : null}
+                <div>{label(finding.type)}</div>
+                {finding.subType ? <span className="compact-meta">{label(finding.subType)}</span> : null}
               </td>
               <td>
-                <span className="path-text">{finding.secretPath || "Unknown path"}</span>
-                {finding.line ? <span className="compact-meta">line {finding.line}</span> : null}
+                <span className="path-text">{finding.secretPath || t("Unknown path")}</span>
+                {finding.line ? <span className="compact-meta">{t("line {line}", { line: finding.line })}</span> : null}
               </td>
               <td>
                 <RiskMeter value={finding.riskScore} />
               </td>
-              <td>{formatTime(finding.eventTime)}</td>
+              <td>{localizedTime(finding.eventTime)}</td>
               <td>
-                <DeepLinkButton href={finding.deepLink} label="Open finding" />
+                <DeepLinkButton href={finding.deepLink} label={t("Open finding")} />
               </td>
             </tr>
           ))}
@@ -1397,24 +1465,25 @@ function DbAuditTable({
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
   if (events.length === 0) {
-    return <EmptyState title="No DB activity" detail="No pgAudit rows match the current filters." />;
+    return <EmptyState title={t("No DB activity")} detail={t("No pgAudit rows match the current filters.")} />;
   }
 
   return (
     <div className="table-wrap">
       <table>
-        <caption>Database audit activity</caption>
+        <caption>{t("Database audit activity")}</caption>
         <thead>
           <tr>
-            <th scope="col">Time</th>
-            <th scope="col">User</th>
-            <th scope="col">Action</th>
-            <th scope="col">Database</th>
-            <th scope="col">Table</th>
-            <th scope="col">Result</th>
-            <th scope="col">Risk</th>
-            <th scope="col" aria-label="Open" />
+            <th scope="col">{t("Time")}</th>
+            <th scope="col">{t("User")}</th>
+            <th scope="col">{t("Action")}</th>
+            <th scope="col">{t("Database")}</th>
+            <th scope="col">{t("Table")}</th>
+            <th scope="col">{t("Result")}</th>
+            <th scope="col">{t("Risk")}</th>
+            <th scope="col" aria-label={t("Open")} />
           </tr>
         </thead>
         <tbody>
@@ -1426,25 +1495,25 @@ function DbAuditTable({
             >
               <td>
                 <button className="row-button row-button--time" type="button" onClick={() => onSelect(event.id)}>
-                  {formatTime(event.eventTime)}
+                  {localizedTime(event.eventTime)}
                 </button>
               </td>
-              <td>{event.user || "Unknown"}</td>
-              <td>{labelize(event.action || event.eventType)}</td>
-              <td>{event.dbName || "Unknown"}</td>
+              <td>{event.user || t("Unknown")}</td>
+              <td>{label(event.action || event.eventType)}</td>
+              <td>{event.dbName || t("Unknown")}</td>
               <td>
                 <span className="path-text">{event.tableName || "n/a"}</span>
               </td>
               <td>
                 <span className={`result-pill result-pill--${event.result || "unknown"}`}>
-                  {event.result || "unknown"}
+                  {label(event.result || "unknown")}
                 </span>
               </td>
               <td>
                 <RiskMeter value={event.riskScore} />
               </td>
               <td>
-                <DeepLinkButton href={event.deepLink} label="Open audit event" />
+                <DeepLinkButton href={event.deepLink} label={t("Open audit event")} />
               </td>
             </tr>
           ))}
@@ -1455,79 +1524,81 @@ function DbAuditTable({
 }
 
 function SelectionPanel({ finding, event }: { finding?: Finding; event?: AuditEvent }) {
+  const { t, label } = usePreferences();
   return (
-    <aside className="selection-panel" aria-label="Selected row details">
+    <aside className="selection-panel" aria-label={t("Selected row details")}>
       <div className="section-heading">
         <div>
-          <h2>Selection details</h2>
-          <p>Current investigation context</p>
+          <h2>{t("Selection details")}</h2>
+          <p>{t("Current investigation context")}</p>
         </div>
       </div>
       {finding ? (
         <div className="detail-block">
           <span className={`severity-pill severity-pill--${finding.severity}`}>
-            {labelize(finding.severity)}
+            {label(finding.severity)}
           </span>
-          <h3>{labelize(finding.type)}</h3>
+          <h3>{label(finding.type)}</h3>
           <dl>
             <div>
-              <dt>Path</dt>
+              <dt>{t("Path")}</dt>
               <dd>
-                {finding.secretPath || "Unknown"}
+                {finding.secretPath || t("Unknown")}
                 {finding.line ? `:${finding.line}` : ""}
               </dd>
             </div>
             <div>
-              <dt>Source</dt>
+              <dt>{t("Source")}</dt>
               <dd>{finding.source}</dd>
             </div>
             <div>
-              <dt>Status</dt>
-              <dd>{finding.status || "unknown"}</dd>
+              <dt>{t("Status")}</dt>
+              <dd>{label(finding.status || "unknown")}</dd>
             </div>
             <div>
-              <dt>Category</dt>
-              <dd>{finding.subType ? labelize(finding.subType) : labelize(finding.type)}</dd>
+              <dt>{t("Category")}</dt>
+              <dd>{finding.subType ? label(finding.subType) : label(finding.type)}</dd>
             </div>
             <div>
-              <dt>Risk</dt>
+              <dt>{t("Risk")}</dt>
               <dd>{finding.riskScore}</dd>
             </div>
           </dl>
         </div>
       ) : (
-        <EmptyState title="No finding selected" detail="Select a finding row." />
+        <EmptyState title={t("No finding selected")} detail={t("Select a finding row.")} />
       )}
 
       {event ? (
         <div className="detail-block detail-block--db">
           <span className={`severity-pill severity-pill--${event.severity}`}>
-            {labelize(event.severity)}
+            {label(event.severity)}
           </span>
-          <h3>{event.dbName || "Database activity"}</h3>
+          <h3>{event.dbName || t("Database activity")}</h3>
           <dl>
             <div>
-              <dt>Credential</dt>
-              <dd>{event.credentialId || event.user || "Unknown"}</dd>
+              <dt>{t("Credential")}</dt>
+              <dd>{event.credentialId || event.user || t("Unknown")}</dd>
             </div>
             <div>
-              <dt>Action</dt>
-              <dd>{labelize(event.action || event.eventType)}</dd>
+              <dt>{t("Action")}</dt>
+              <dd>{label(event.action || event.eventType)}</dd>
             </div>
             <div>
-              <dt>Result</dt>
-              <dd>{event.result || "unknown"}</dd>
+              <dt>{t("Result")}</dt>
+              <dd>{label(event.result || "unknown")}</dd>
             </div>
           </dl>
         </div>
       ) : (
-        <EmptyState title="No audit row selected" detail="Select a DB audit row." />
+        <EmptyState title={t("No audit row selected")} detail={t("Select a DB audit row.")} />
       )}
     </aside>
   );
 }
 
 function StreamHealthRow({ stream }: { stream: StreamHealth }) {
+  const { t } = usePreferences();
   return (
     <article className="stream-row">
       <div>
@@ -1536,7 +1607,7 @@ function StreamHealthRow({ stream }: { stream: StreamHealth }) {
         <span>{stream.source}</span>
       </div>
       <div className="stream-row__metrics">
-        <span>{stream.count} events</span>
+        <span>{t("{count} events", { count: stream.count })}</span>
         <span>{stream.freshness}</span>
       </div>
     </article>
@@ -1544,6 +1615,7 @@ function StreamHealthRow({ stream }: { stream: StreamHealth }) {
 }
 
 function VaultRadarSourcesPanel({ sources }: { sources: VaultRadarSource[] }) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
   return (
     <div className="vault-radar-source-grid">
       {sources.map((source) => (
@@ -1553,17 +1625,19 @@ function VaultRadarSourcesPanel({ sources }: { sources: VaultRadarSource[] }) {
               <Icon name={source.id === "aws-lab-inventory" ? "cluster" : "radar"} />
             </span>
             <span className={`result-pill result-pill--${source.status}`}>
-              {labelize(source.status)}
+              {label(source.status)}
             </span>
           </div>
           <div>
             <h3>{source.name}</h3>
-            <span className="compact-meta">{labelize(source.type)}</span>
+            <span className="compact-meta">{label(source.type)}</span>
           </div>
           <p>{source.scope}</p>
           <code>{source.command}</code>
           <span className="compact-meta">
-            {source.lastVerifiedAt ? `Verified ${formatTime(source.lastVerifiedAt)}` : "Awaiting live scan"}
+            {source.lastVerifiedAt
+              ? t("Verified {time}", { time: localizedTime(source.lastVerifiedAt) })
+              : t("Awaiting live scan")}
           </span>
         </article>
       ))}
@@ -1578,38 +1652,39 @@ function ApplicationRiskPanel({
   summary: ApplicationRiskSummary;
   signals: RiskSignal[];
 }) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
   return (
     <div className="risk-signal-layout">
       <div className="application-risk-summary">
         <div>
-          <span className="compact-meta">Applications</span>
+          <span className="compact-meta">{t("Applications")}</span>
           <strong>{summary.applicationCount}</strong>
         </div>
         <div>
-          <span className="compact-meta">Open critical</span>
+          <span className="compact-meta">{t("Open critical")}</span>
           <strong>{summary.openCritical}</strong>
         </div>
         <div>
-          <span className="compact-meta">Sources</span>
-          <strong>{summary.sources.map(labelize).join(", ")}</strong>
+          <span className="compact-meta">{t("Sources")}</span>
+          <strong>{summary.sources.map(label).join(", ")}</strong>
         </div>
         <div>
-          <span className="compact-meta">Latest signal</span>
-          <strong>{formatTime(summary.lastObservedAt)}</strong>
+          <span className="compact-meta">{t("Latest signal")}</span>
+          <strong>{localizedTime(summary.lastObservedAt)}</strong>
         </div>
       </div>
 
       <div className="table-wrap">
         <table>
-          <caption>Application risk signals</caption>
+          <caption>{t("Application risk signals")}</caption>
           <thead>
             <tr>
-              <th scope="col">Risk</th>
-              <th scope="col">Source</th>
-              <th scope="col">Application</th>
-              <th scope="col">Finding</th>
-              <th scope="col">Owner</th>
-              <th scope="col">Action</th>
+              <th scope="col">{t("Risk")}</th>
+              <th scope="col">{t("Source")}</th>
+              <th scope="col">{t("Application")}</th>
+              <th scope="col">{t("Finding")}</th>
+              <th scope="col">{t("Owner")}</th>
+              <th scope="col">{t("Action")}</th>
             </tr>
           </thead>
           <tbody>
@@ -1619,20 +1694,20 @@ function ApplicationRiskPanel({
                   <RiskMeter value={signal.riskScore} />
                 </td>
                 <td>
-                  <div>{labelize(signal.sourceName)}</div>
-                  <span className="compact-meta">{labelize(signal.category)}</span>
+                  <div>{label(signal.sourceName)}</div>
+                  <span className="compact-meta">{label(signal.category)}</span>
                 </td>
                 <td>
                   <div>{signal.applicationName}</div>
-                  <span className="compact-meta">{labelize(signal.environment)}</span>
+                  <span className="compact-meta">{label(signal.environment)}</span>
                 </td>
                 <td>
                   <div className="path-text">{signal.findingTitle}</div>
                   <span className={`severity-pill severity-pill--${signal.severity}`}>
-                    {labelize(signal.severity)}
+                    {label(signal.severity)}
                   </span>
                 </td>
-                <td>{signal.owner || "Unassigned"}</td>
+                <td>{signal.owner || t("Unassigned")}</td>
                 <td>
                   <span className="path-text">{signal.remediationAction}</span>
                 </td>
@@ -1660,6 +1735,7 @@ function AutomationPanel({
   error: string;
   onRun: (action: DryRunAction) => void;
 }) {
+  const { t, label } = usePreferences();
   return (
     <div className="automation-layout">
       <div className="automation-actions">
@@ -1673,18 +1749,18 @@ function AutomationPanel({
                 <Icon name={action.engine.startsWith("argo") ? "workflow" : "activity"} />
               </span>
               <span className={`result-pill result-pill--${action.status}`}>
-                {labelize(action.engine)}
+                {label(action.engine)}
               </span>
             </div>
             <h3>{action.title}</h3>
-            <p>{labelize(action.targetType)} / risk -{action.riskReduction}</p>
+            <p>{label(action.targetType)} / {t("risk -{risk}", { risk: action.riskReduction })}</p>
             <button
               className="action-button"
               type="button"
               disabled={isRunning}
               onClick={() => onRun(action)}
             >
-              {isRunning && action.id === selectedActionId ? "Planning..." : "Dry run"}
+              {isRunning && action.id === selectedActionId ? t("Planning...") : t("Dry run")}
             </button>
           </article>
         ))}
@@ -1699,16 +1775,16 @@ function AutomationPanel({
               <h3>{result.runId}</h3>
               <dl>
                 <div>
-                  <dt>Engine</dt>
-                  <dd>{labelize(result.engine)}</dd>
+                  <dt>{t("Engine")}</dt>
+                  <dd>{label(result.engine)}</dd>
                 </div>
                 <div>
-                  <dt>Target</dt>
+                  <dt>{t("Target")}</dt>
                   <dd>{result.targetId}</dd>
                 </div>
                 <div>
-                  <dt>Execution</dt>
-                  <dd>{result.executionBlocked ? "Blocked for review" : "Allowed"}</dd>
+                  <dt>{t("Execution")}</dt>
+                  <dd>{t(result.executionBlocked ? "Blocked for review" : "Allowed")}</dd>
                 </div>
               </dl>
             </div>
@@ -1718,14 +1794,17 @@ function AutomationPanel({
                   <span>{step.order}</span>
                   <div>
                     <strong>{step.name}</strong>
-                    <small>{step.willExecute ? "will execute" : "dry-run only"}</small>
+                    <small>{t(step.willExecute ? "will execute" : "dry-run only")}</small>
                   </div>
                 </li>
               ))}
             </ol>
           </>
         ) : (
-          <EmptyState title="No dry-run yet" detail="Choose an action to preview the reviewed workflow plan." />
+          <EmptyState
+            title={t("No dry-run yet")}
+            detail={t("Choose an action to preview the reviewed workflow plan.")}
+          />
         )}
       </div>
     </div>
@@ -1741,16 +1820,17 @@ function ObservabilityPanel({
   links: ObservabilityLinks;
   platform: KubernetesPlatform;
 }) {
+  const { t, label } = usePreferences();
   return (
     <div className="observability-layout">
       <div className="observability-primary">
         <section className="console-links" aria-labelledby="console-links-title">
           <div className="observability-subheading">
             <div>
-              <h3 id="console-links-title">Console navigation</h3>
-              <p>Navigation only. Link availability does not indicate service health or telemetry freshness.</p>
+              <h3 id="console-links-title">{t("Console navigation")}</h3>
+              <p>{t("Navigation only. Link availability does not indicate service health or telemetry freshness.")}</p>
             </div>
-            <span className="compact-meta">Environment URLs</span>
+            <span className="compact-meta">{t("Environment URLs")}</span>
           </div>
           <div className="console-link-grid">
             {links.links.map((link) => (
@@ -1762,14 +1842,14 @@ function ObservabilityPanel({
                     href={link.url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    aria-label={`Open ${link.name}`}
+                    aria-label={t("Open {name}", { name: link.name })}
                   >
                     <Icon name="external" />
-                    Open
+                    {t("Open")}
                   </a>
                 ) : (
                   <span className="console-link-action console-link-action--disabled" aria-disabled="true">
-                    Not configured
+                    {t("Not configured")}
                   </span>
                 )}
               </article>
@@ -1778,8 +1858,8 @@ function ObservabilityPanel({
         </section>
         <section className="collection-targets" aria-labelledby="collection-targets-title">
           <div className="observability-subheading">
-            <h3 id="collection-targets-title">Collection targets</h3>
-            <span className="compact-meta">Signal status</span>
+            <h3 id="collection-targets-title">{t("Collection targets")}</h3>
+            <span className="compact-meta">{t("Signal status")}</span>
           </div>
           <div className="target-grid">
             {targets.map((target) => (
@@ -1797,27 +1877,27 @@ function ObservabilityPanel({
       </div>
       <div className="platform-panel">
         <div className="detail-block">
-          <span className="compact-meta">{labelize(platform.status)}</span>
-          <h3>{labelize(platform.mode)}</h3>
+          <span className="compact-meta">{label(platform.status)}</span>
+          <h3>{label(platform.mode)}</h3>
           <dl>
             <div>
-              <dt>Cluster</dt>
+              <dt>{t("Cluster")}</dt>
               <dd>{platform.clusterName}</dd>
             </div>
             <div>
-              <dt>Namespace</dt>
+              <dt>{t("Namespace")}</dt>
               <dd>{platform.namespace}</dd>
             </div>
             <div>
-              <dt>Compute</dt>
-              <dd>{labelize(platform.computeMode)}</dd>
+              <dt>{t("Compute")}</dt>
+              <dd>{label(platform.computeMode)}</dd>
             </div>
             <div>
-              <dt>Create</dt>
+              <dt>{t("Create")}</dt>
               <dd>{platform.creationScript}</dd>
             </div>
             <div>
-              <dt>Deploy</dt>
+              <dt>{t("Deploy")}</dt>
               <dd>{platform.deploymentScript}</dd>
             </div>
           </dl>
@@ -1844,38 +1924,39 @@ function KubernetesOptimizationPanel({
   recommendations: OptimizationRecommendation[];
   onRunRecommendation: (recommendation: OptimizationRecommendation) => void;
 }) {
+  const { t, label, formatMoney: localizedMoney } = usePreferences();
   return (
     <div className="optimization-layout">
       <div className="optimization-summary">
         <div>
-          <span className="compact-meta">Daily cost</span>
-          <strong>{formatMoney(summary.dailyCost)}</strong>
+          <span className="compact-meta">{t("Daily cost")}</span>
+          <strong>{localizedMoney(summary.dailyCost)}</strong>
         </div>
         <div>
-          <span className="compact-meta">Monthly projection</span>
-          <strong>{formatMoney(summary.monthlyProjection)}</strong>
+          <span className="compact-meta">{t("Monthly projection")}</span>
+          <strong>{localizedMoney(summary.monthlyProjection)}</strong>
         </div>
         <div>
-          <span className="compact-meta">Potential savings</span>
-          <strong>{formatMoney(summary.potentialMonthlySavings)}</strong>
+          <span className="compact-meta">{t("Potential savings")}</span>
+          <strong>{localizedMoney(summary.potentialMonthlySavings)}</strong>
         </div>
         <div>
-          <span className="compact-meta">Signals</span>
-          <strong>{summary.recommendationCount} recommendations</strong>
+          <span className="compact-meta">{t("Signals")}</span>
+          <strong>{t("{count} recommendations", { count: summary.recommendationCount })}</strong>
         </div>
       </div>
       <div className="table-wrap">
         <table>
-          <caption>Kubernetes cost and optimization recommendations</caption>
+          <caption>{t("Kubernetes cost and optimization recommendations")}</caption>
           <thead>
             <tr>
-              <th scope="col">Severity</th>
-              <th scope="col">Source</th>
-              <th scope="col">Workload</th>
-              <th scope="col">Current</th>
-              <th scope="col">Recommended</th>
-              <th scope="col">Savings</th>
-              <th scope="col">Action</th>
+              <th scope="col">{t("Severity")}</th>
+              <th scope="col">{t("Source")}</th>
+              <th scope="col">{t("Workload")}</th>
+              <th scope="col">{t("Current")}</th>
+              <th scope="col">{t("Recommended")}</th>
+              <th scope="col">{t("Savings")}</th>
+              <th scope="col">{t("Action")}</th>
             </tr>
           </thead>
           <tbody>
@@ -1884,12 +1965,12 @@ function KubernetesOptimizationPanel({
                 <tr key={recommendation.id}>
                   <td>
                     <span className={`severity-pill severity-pill--${recommendation.severity}`}>
-                      {labelize(recommendation.severity)}
+                      {label(recommendation.severity)}
                     </span>
                   </td>
                   <td>
                     <div>{recommendation.source}</div>
-                    <span className="compact-meta">{labelize(recommendation.type)}</span>
+                    <span className="compact-meta">{label(recommendation.type)}</span>
                   </td>
                   <td>
                     <div className="path-text">{recommendation.workload}</div>
@@ -1897,14 +1978,14 @@ function KubernetesOptimizationPanel({
                   </td>
                   <td>{recommendation.current}</td>
                   <td>{recommendation.recommended}</td>
-                  <td>{formatMoney(recommendation.monthlySavings)}</td>
+                  <td>{localizedMoney(recommendation.monthlySavings)}</td>
                   <td>
                     <button
                       className="action-button action-button--compact"
                       type="button"
                       onClick={() => onRunRecommendation(recommendation)}
                     >
-                      Dry run
+                      {t("Dry run")}
                     </button>
                   </td>
                 </tr>
@@ -1913,8 +1994,8 @@ function KubernetesOptimizationPanel({
               <tr>
                 <td colSpan={7}>
                   <EmptyState
-                    title="No live optimization recommendations"
-                    detail="OpenCost currently reports no recommendation signals for this cluster."
+                    title={t("No live optimization recommendations")}
+                    detail={t("OpenCost currently reports no recommendation signals for this cluster.")}
                   />
                 </td>
               </tr>
@@ -1927,9 +2008,10 @@ function KubernetesOptimizationPanel({
 }
 
 function DeepLinkButton({ href, label }: { href?: string; label: string }) {
+  const { t } = usePreferences();
   const target = externalHref(href);
   if (!target) {
-    return <span className="icon-link icon-link--disabled" aria-label={`${label} unavailable`} />;
+    return <span className="icon-link icon-link--disabled" aria-label={t("{label} unavailable", { label })} />;
   }
 
   return (
@@ -1973,14 +2055,15 @@ function FilterSelect({
   options: string[];
   onChange: (value: string) => void;
 }) {
+  const { t, label: localizedLabel } = usePreferences();
   return (
     <label className="filter-select">
       <span className="sr-only">{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)} aria-label={label}>
-        <option value="all">All {label.toLowerCase()}</option>
+        <option value="all">{t("All {label}", { label: t(label) })}</option>
         {options.map((option) => (
           <option value={option} key={option}>
-            {labelize(option)}
+            {localizedLabel(option)}
           </option>
         ))}
       </select>
@@ -1989,9 +2072,10 @@ function FilterSelect({
 }
 
 function RiskMeter({ value }: { value: number }) {
+  const { t } = usePreferences();
   const safeValue = Math.max(0, Math.min(100, value || 0));
   return (
-    <span className="risk-meter" aria-label={`Risk score ${safeValue}`}>
+    <span className="risk-meter" aria-label={t("Risk score {score}", { score: safeValue })}>
       <span>
         <i style={{ width: `${safeValue}%` }} />
       </span>

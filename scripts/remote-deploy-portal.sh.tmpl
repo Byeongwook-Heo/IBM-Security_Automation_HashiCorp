@@ -240,7 +240,7 @@ esac
   printf 'PROMETHEUS_URL=%s\n' '__PROMETHEUS_URL__'
   printf 'LOKI_URL=%s\n' '__LOKI_URL__'
   printf 'TEMPO_URL=%s\n' '__TEMPO_URL__'
-  printf 'PORTAL_AUTH_MODE=%s\n' 'deny'
+  printf 'PORTAL_AUTH_MODE=%s\n' '__PORTAL_AUTH_MODE__'
 } > "$INSTALL_DIR/backend.env"
 chmod 600 "$INSTALL_DIR/backend.env"
 

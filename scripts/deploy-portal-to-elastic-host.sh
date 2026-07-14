@@ -12,6 +12,7 @@ PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 LOKI_URL="${LOKI_URL:-}"
 TEMPO_URL="${TEMPO_URL:-}"
 ENABLE_ELASTIC_PEER_PROXY="${ENABLE_ELASTIC_PEER_PROXY:-true}"
+PORTAL_AUTH_MODE="${PORTAL_AUTH_MODE:-deny}"
 
 if [[ -z "$ADMIN_CIDR" ]]; then
   echo "ADMIN_CIDR is required, for example ADMIN_CIDR=121.190.86.98/32" >&2
@@ -20,6 +21,11 @@ fi
 
 if [[ "$ENABLE_ELASTIC_PEER_PROXY" != "true" && "$ENABLE_ELASTIC_PEER_PROXY" != "false" ]]; then
   echo "ENABLE_ELASTIC_PEER_PROXY must be true or false" >&2
+  exit 1
+fi
+
+if [[ "$PORTAL_AUTH_MODE" != "deny" && "$PORTAL_AUTH_MODE" != "trusted_headers" ]]; then
+  echo "PORTAL_AUTH_MODE must be deny or trusted_headers for this deployment" >&2
   exit 1
 fi
 
@@ -121,6 +127,7 @@ REMOTE_SCRIPT="$(
   LOKI_URL="$LOKI_URL" \
   TEMPO_URL="$TEMPO_URL" \
   ENABLE_ELASTIC_PEER_PROXY="$ENABLE_ELASTIC_PEER_PROXY" \
+  PORTAL_AUTH_MODE="$PORTAL_AUTH_MODE" \
   python3 - "$ROOT_DIR/scripts/remote-deploy-portal.sh.tmpl" <<'PY'
 import os
 import sys
@@ -138,6 +145,7 @@ for key in (
     "LOKI_URL",
     "TEMPO_URL",
     "ENABLE_ELASTIC_PEER_PROXY",
+    "PORTAL_AUTH_MODE",
 ):
     text = text.replace(f"__{key}__", os.environ[key])
 

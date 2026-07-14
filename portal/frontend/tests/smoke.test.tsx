@@ -1,12 +1,32 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { App } from "../src/main";
+
+beforeEach(() => {
+  const values = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key) => values.delete(key),
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
+});
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("style");
+  document.documentElement.lang = "en";
 });
 
 function jsonResponse(body: unknown, status = 200) {
@@ -196,5 +216,51 @@ describe("security portal", () => {
       "https://tempo.example.test/search",
     );
     expect(screen.getAllByText("Not configured")).toHaveLength(3);
+  });
+
+  it("switches language and theme and restores both preferences after remount", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 80, elastic_enabled: false });
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") {
+          return jsonResponse({});
+        }
+        return jsonResponse([]);
+      }),
+    );
+
+    const firstRender = render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Switch to Korean" }));
+
+    expect(await screen.findByText("보안 점수")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("lang", "ko");
+    expect(window.localStorage.getItem("security-portal.locale")).toBe("ko");
+
+    fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
+    expect(window.localStorage.getItem("security-portal.theme")).toBe("dark");
+    expect(screen.getByRole("button", { name: "라이트 모드로 전환" })).toBeInTheDocument();
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(await screen.findByText("보안 점수")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("lang", "ko");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
   });
 });

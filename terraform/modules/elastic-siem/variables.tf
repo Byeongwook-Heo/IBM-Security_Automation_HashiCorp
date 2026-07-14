@@ -90,7 +90,7 @@ variable "enable_elasticsearch_api_access" {
 }
 
 variable "elasticsearch_allowed_security_group_ids" {
-  description = "Security groups allowed to reach the Elasticsearch API over the VPC when API access is enabled."
+  description = "Trusted security groups allowed to reach the Elasticsearch API over private VPC connectivity. The host must expose a private listener separately."
   type        = list(string)
   default     = []
 }

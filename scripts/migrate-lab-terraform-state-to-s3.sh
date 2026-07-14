@@ -62,8 +62,20 @@ aws s3api put-bucket-encryption \
 
 policy_file="$(mktemp "${TMPDIR:-/tmp}/terraform-state-bucket-policy.XXXXXX")"
 backend_file="$TF_DIR/.backend.s3.hcl"
+local_state_snapshot=""
+migration_verified="false"
+if [[ -s "$TF_DIR/terraform.tfstate" ]]; then
+  local_state_snapshot="$(mktemp "${TMPDIR:-/tmp}/terraform-local-state.XXXXXX")"
+  cp "$TF_DIR/terraform.tfstate" "$local_state_snapshot"
+  chmod 600 "$local_state_snapshot"
+fi
 cleanup() {
   rm -f "$policy_file"
+  if [[ "$migration_verified" != "true" && -n "$local_state_snapshot" && ! -s "$TF_DIR/terraform.tfstate" ]]; then
+    cp "$local_state_snapshot" "$TF_DIR/terraform.tfstate"
+    chmod 600 "$TF_DIR/terraform.tfstate"
+  fi
+  rm -f "$local_state_snapshot"
 }
 trap cleanup EXIT
 
@@ -83,6 +95,19 @@ aws s3api put-bucket-policy \
   --bucket "$STATE_BUCKET" \
   --policy "file://$policy_file"
 
+bucket_ready="false"
+for _attempt in $(seq 1 30); do
+  if aws s3api head-bucket --region "$REGION" --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+    bucket_ready="true"
+    break
+  fi
+  sleep 2
+done
+if [[ "$bucket_ready" != "true" ]]; then
+  echo "State bucket did not become readable after creation" >&2
+  exit 1
+fi
+
 cp "$TF_DIR/backend.tf.example" "$TF_DIR/backend.tf"
 chmod 600 "$TF_DIR/backend.tf"
 {
@@ -98,6 +123,7 @@ find "$TF_DIR" -maxdepth 1 -type f \( -name '*.tfstate' -o -name '*.tfstate.back
 terraform -chdir="$TF_DIR" init -migrate-state -force-copy -backend-config="$backend_file"
 terraform -chdir="$TF_DIR" state pull >/dev/null
 aws s3api head-object --region "$REGION" --bucket "$STATE_BUCKET" --key "$STATE_KEY" >/dev/null
+migration_verified="true"
 
 printf '{"backend":"s3","bucket":"%s","key":"%s","region":"%s","migration_verified":true}\n' \
   "$STATE_BUCKET" "$STATE_KEY" "$REGION"

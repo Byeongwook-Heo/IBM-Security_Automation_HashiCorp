@@ -423,8 +423,12 @@ not an active remediation engine.
 
 ## Terraform State Migration
 
-Local state remains authoritative until the guarded migration is explicitly
-confirmed. After backing up the state and reviewing the script inputs:
+The lab state was migrated on 2026-07-14 to:
+
+`s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`
+
+The bucket is private, versioned, encrypted, and uses Terraform's native S3
+lockfile. To repeat or recover a migration after reviewing the script inputs:
 
 ```bash
 CONFIRM_MIGRATION=YES scripts/migrate-lab-terraform-state-to-s3.sh

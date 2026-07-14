@@ -296,6 +296,8 @@ resource "aws_instance" "this" {
   })
 
   lifecycle {
+    ignore_changes = [user_data]
+
     precondition {
       condition     = var.subnet_id != null
       error_message = "subnet_id must be set when the observability host is enabled."

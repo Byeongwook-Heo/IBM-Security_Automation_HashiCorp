@@ -468,7 +468,7 @@ resource "aws_lb_target_group" "tfe" {
 
   health_check {
     enabled             = true
-    path                = "/api/v1/health/readiness"
+    path                = "/_health_check"
     protocol            = "HTTPS"
     matcher             = "200"
     interval            = 30
@@ -535,7 +535,8 @@ resource "aws_instance" "this" {
     http_put_response_hop_limit = 2
   }
 
-  user_data_replace_on_change = true
+  # Runtime updates are deployed through SSM; never replace this stateful host for a bootstrap-script change.
+  user_data_replace_on_change = false
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     region                         = var.region
     tfe_hostname                   = aws_lb.this[0].dns_name
@@ -554,6 +555,10 @@ resource "aws_instance" "this" {
     Name = "${local.name}-host"
     Role = "terraform-enterprise"
   })
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.ssm,

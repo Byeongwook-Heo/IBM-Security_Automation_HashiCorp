@@ -104,31 +104,31 @@ resource "aws_db_parameter_group" "this" {
 
   parameter {
     name         = "pgaudit.log_catalog"
-    value        = var.pgaudit_log_catalog ? "on" : "off"
+    value        = var.pgaudit_log_catalog ? "1" : "0"
     apply_method = "immediate"
   }
 
   parameter {
     name         = "pgaudit.log_parameter"
-    value        = var.pgaudit_log_parameter ? "on" : "off"
+    value        = var.pgaudit_log_parameter ? "1" : "0"
     apply_method = "immediate"
   }
 
   parameter {
     name         = "pgaudit.log_statement_once"
-    value        = var.pgaudit_log_statement_once ? "on" : "off"
+    value        = var.pgaudit_log_statement_once ? "1" : "0"
     apply_method = "immediate"
   }
 
   parameter {
     name         = "log_connections"
-    value        = var.log_connections ? "on" : "off"
+    value        = var.log_connections ? "1" : "0"
     apply_method = "immediate"
   }
 
   parameter {
     name         = "log_disconnections"
-    value        = var.log_disconnections ? "on" : "off"
+    value        = var.log_disconnections ? "1" : "0"
     apply_method = "immediate"
   }
 

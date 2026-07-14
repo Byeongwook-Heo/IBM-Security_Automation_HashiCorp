@@ -81,7 +81,7 @@ def test_compose_runtime_model_is_valid_pinned_and_health_checked() -> None:
     model = compose_model()
     services = model["services"]
 
-    assert set(services) == set(PINNED_IMAGES)
+    assert set(services) == set(PINNED_IMAGES) | {"tempo-init"}
     for service_name, expected_image in PINNED_IMAGES.items():
         service = services[service_name]
         assert service["image"] == expected_image
@@ -89,6 +89,19 @@ def test_compose_runtime_model_is_valid_pinned_and_health_checked() -> None:
         assert service["healthcheck"]["test"]
         assert service["cap_drop"] == ["ALL"]
         assert "no-new-privileges:true" in service["security_opt"]
+
+    tempo_init = services["tempo-init"]
+    assert tempo_init["image"] == PINNED_IMAGES["grafana"]
+    assert tempo_init["user"] == "0:0"
+    assert tempo_init["restart"] == "no"
+    assert tempo_init["cap_drop"] == ["ALL"]
+    assert set(tempo_init["cap_add"]) == {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+    assert "chown -R 10001:10001 /var/tempo" in tempo_init["command"][0]
+    assert any(
+        volume.get("type") == "volume" and volume.get("source") == "tempo-data"
+        for volume in tempo_init["volumes"]
+    )
+    assert services["tempo"]["depends_on"]["tempo-init"]["condition"] == "service_completed_successfully"
 
     for service_name, volume_name in {
         "prometheus": "prometheus-data",

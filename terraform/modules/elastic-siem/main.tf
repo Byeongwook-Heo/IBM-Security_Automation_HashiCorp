@@ -83,7 +83,7 @@ resource "aws_security_group" "this" {
   }
 
   dynamic "ingress" {
-    for_each = var.enable_elasticsearch_api_access ? toset(var.elasticsearch_allowed_security_group_ids) : toset([])
+    for_each = toset(var.elasticsearch_allowed_security_group_ids)
 
     content {
       description     = "Elasticsearch API from trusted security groups"
@@ -221,7 +221,8 @@ resource "aws_instance" "this" {
     http_put_response_hop_limit = 2
   }
 
-  user_data_replace_on_change = true
+  # Runtime updates are deployed through SSM; never replace this stateful host for a bootstrap-script change.
+  user_data_replace_on_change = false
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     region                        = var.region
     elastic_stack_version         = var.elastic_stack_version
@@ -238,6 +239,10 @@ resource "aws_instance" "this" {
     Name = "${local.name}-host"
     Role = "elastic-siem"
   })
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.ssm,

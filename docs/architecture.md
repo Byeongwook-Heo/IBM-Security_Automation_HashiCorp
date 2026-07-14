@@ -17,9 +17,7 @@ See `docs/phase-plan.md`, `docs/elastic-siem.md`, Terraform modules, connector s
 
 ## Current Lab Inventory
 
-The rows below are the last recorded live inventory, not a current health
-assertion. AWS verification on 2026-07-13 was blocked by an expired short-lived
-session token.
+The rows below reflect the live inventory re-verified on 2026-07-14.
 
 | Component | Current implementation |
 | --- | --- |
@@ -32,7 +30,7 @@ session token.
 | PostgreSQL / pgAudit | Private RDS `ibm-hc-lab-data-security-lab` |
 | Kubernetes | EKS `ibm-hc-lab-test-eks`, private-subnet Fargate, no EC2 nodes |
 | Observability | EC2 Prometheus/Grafana/Loki/Tempo/OTel plus EKS Prometheus/Blackbox |
-| Automation | Argo dry-run workflows live previously; StackStorm pack and private review-host Terraform staged only |
+| Automation | Argo dry-run workflows live; StackStorm pack and private review-host Terraform staged only |
 
 ## Runtime Flow
 
@@ -41,16 +39,19 @@ session token.
 2. The portal uses stream-specific read-only API keys from Secrets Manager and
    masks secret-like fields before returning API responses.
 3. Prometheus and Blackbox probe the six requested lab services from EKS.
-4. OpenCost calculates Fargate namespace allocation and a controlled operator
-   sync writes the latest summary to Elastic.
+4. OpenCost calculates Fargate namespace allocation and a Kubernetes CronJob
+   writes the latest summary to Elastic every 15 minutes through a private,
+   security-group-restricted VPC peer endpoint on the Elastic host.
 5. Argo Events accepts internal dry-run webhook events and submits an Argo
    WorkflowTemplate whose remediation remains blocked behind review.
 6. Filebeat tails portal container logs with `filestream` and writes through a
-   dedicated least-privilege API key after the next portal deployment.
+   dedicated least-privilege API key.
 7. The application-risk pipeline normalizes open-source scanner, Kubernetes,
    Vault PKI, backup, and resilience metadata before portal or Elastic ingest.
 
-Terraform state remains local until the guarded S3 migration script is run
-with a valid AWS session and explicit confirmation. StackStorm is not part of
-the active remediation path; its EC2 module creates only a private review host
-from an approved AMI and defaults to disabled.
+Terraform state is stored at
+`s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`
+with versioning, server-side encryption, blocked public access, and Terraform's
+native S3 lockfile. StackStorm is not part of the active remediation path; its
+EC2 module creates only a private review host from an approved AMI and defaults
+to disabled.

@@ -22,10 +22,9 @@ services:
     image: docker.elastic.co/beats/filebeat:8.17.0
     restart: unless-stopped
     user: root
+    network_mode: host
     command: ["filebeat", "-e", "--strict.perms=false"]
     env_file: ./filebeat.env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro

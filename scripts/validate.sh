@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 PYTHON="${PYTHON:-python3}"
+TF_VALIDATE_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/terraform-validate.XXXXXX")"
+cleanup() {
+  rm -rf "$TF_VALIDATE_DATA_DIR"
+}
+trap cleanup EXIT
 
 "$PYTHON" -m compileall portal/backend/app connectors
 if "$PYTHON" - <<'PY'
@@ -16,8 +21,8 @@ else
   echo "pytest not installed; skipping pytest suite"
 fi
 terraform -chdir=terraform/envs/lab fmt -check -recursive
-terraform -chdir=terraform/envs/lab init -backend=false -input=false
-terraform -chdir=terraform/envs/lab validate
+TF_DATA_DIR="$TF_VALIDATE_DATA_DIR" terraform -chdir=terraform/envs/lab init -backend=false -input=false
+TF_DATA_DIR="$TF_VALIDATE_DATA_DIR" terraform -chdir=terraform/envs/lab validate
 
 if command -v npm >/dev/null 2>&1 && [[ -x portal/frontend/node_modules/.bin/vitest ]]; then
   npm --prefix portal/frontend test

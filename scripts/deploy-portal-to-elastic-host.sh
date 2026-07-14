@@ -11,9 +11,15 @@ GRAFANA_URL="${GRAFANA_URL:-}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 LOKI_URL="${LOKI_URL:-}"
 TEMPO_URL="${TEMPO_URL:-}"
+ENABLE_ELASTIC_PEER_PROXY="${ENABLE_ELASTIC_PEER_PROXY:-true}"
 
 if [[ -z "$ADMIN_CIDR" ]]; then
   echo "ADMIN_CIDR is required, for example ADMIN_CIDR=121.190.86.98/32" >&2
+  exit 1
+fi
+
+if [[ "$ENABLE_ELASTIC_PEER_PROXY" != "true" && "$ENABLE_ELASTIC_PEER_PROXY" != "false" ]]; then
+  echo "ENABLE_ELASTIC_PEER_PROXY must be true or false" >&2
   exit 1
 fi
 
@@ -114,6 +120,7 @@ REMOTE_SCRIPT="$(
   PROMETHEUS_URL="$PROMETHEUS_URL" \
   LOKI_URL="$LOKI_URL" \
   TEMPO_URL="$TEMPO_URL" \
+  ENABLE_ELASTIC_PEER_PROXY="$ENABLE_ELASTIC_PEER_PROXY" \
   python3 - "$ROOT_DIR/scripts/remote-deploy-portal.sh.tmpl" <<'PY'
 import os
 import sys
@@ -130,6 +137,7 @@ for key in (
     "PROMETHEUS_URL",
     "LOKI_URL",
     "TEMPO_URL",
+    "ENABLE_ELASTIC_PEER_PROXY",
 ):
     text = text.replace(f"__{key}__", os.environ[key])
 

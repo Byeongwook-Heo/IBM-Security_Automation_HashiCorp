@@ -37,6 +37,8 @@ def test_opencost_deployer_uses_private_temp_files_and_server_dry_run():
     assert "umask 077" in script
     assert "mktemp" in script
     assert "--dry-run=server" in script
+    assert "apply_resource()" in script
+    assert "apply_args=()" not in script
     assert '--from-file="api-key=$api_key_file"' in script
     assert '--from-literal="api-key=' not in script
     assert "secret_material_printed:false" in script

@@ -1,23 +1,15 @@
 # Lab Deployment Status
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Verification Boundary
 
-The resource identifiers below are the last recorded live inventory. A
-2026-07-13 AWS STS preflight using the local credential file returned
-`ExpiredToken`, so no Terraform apply, SSM deployment, EKS reconciliation, or
-remote-state migration was attempted in the final QA pass.
+AWS, SSM, EKS, service endpoints, and the S3 Terraform backend were re-verified
+on 2026-07-14. The final full Terraform plan returned `No changes`.
 
-Code ready but not yet live-reconciled:
-
-- restricted Terraform Enterprise ALB ingress and strict readiness matching;
-- fail-closed portal auth, trusted proxy headers, explicit CORS, and Filebeat;
-- digest-pinned observability Compose runtime;
-- durable OpenCost sync plus KRR/VPA/Goldilocks recommendation collectors;
-- expanded Phase 6 scanner inputs and read-only Vault PKI metadata collector;
-- guarded S3 Terraform state migration; and
-- disabled-by-default private StackStorm review host.
+External-input boundaries remain for full Keycloak OIDC configuration,
+continuous HCP Vault Radar source assignment, and live read-only Vault PKI
+metadata. StackStorm remains disabled and review-only by design.
 
 ## Deployed
 
@@ -43,6 +35,8 @@ Code ready but not yet live-reconciled:
 ## Verified
 
 - Security portal health returns `{"status":"ok","mode":"mock+elastic"}`.
+- Filebeat is publishing portal logs through its dedicated API key, and the
+  portal returns current Filebeat, Vault audit, and DB audit events.
 - Portal summary reads Elastic data streams.
 - RDS is private, encrypted, `available`, and has parameter group status `in-sync`.
 - Vault nodes can reach RDS over TCP 5432.
@@ -51,11 +45,7 @@ Code ready but not yet live-reconciled:
 - The dynamic credential lease was revoked after the test.
 - pgAudit logs were exported to CloudWatch.
 - 21 CloudWatch pgAudit events were normalized and ingested into Elastic.
-- Current portal Elastic counts after deduplication:
-  - `elastic_events = 37`
-  - `vault_audit_events = 1`
-  - `db_audit_events = 22`
-  - `vault_radar_findings = 14`
+- Kibana reports `available`; Grafana reports database `ok`.
 - EC2 AMI policy check passed: running/stopped instances use `hc-security-base-*` or `hc-base-*` AMIs.
 - Test EKS cluster is `ACTIVE` on Kubernetes `1.36`.
 - Test EKS public API endpoint is restricted to `121.190.86.98/32`.
@@ -65,22 +55,31 @@ Code ready but not yet live-reconciled:
   `security-platform-prometheus-scrape-config` were applied to the test EKS API.
 - CoreDNS, Prometheus, kube-state-metrics, Blackbox Exporter, OpenCost, Argo
   Workflows, Argo Events, and KEDA are running on Fargate.
+- Goldilocks and the VPA recommender are Ready. KRR and VPA recommendation
+  export CronJobs are installed without enabling automatic resource mutation.
 - Blackbox `probe_success=1` was verified for Vault, Terraform Enterprise,
   Keycloak, Security Portal, RDS PostgreSQL, and Elastic/Kibana. Vault
   uninitialized/sealed responses (`501`/`503`) are not accepted as healthy.
 - OpenCost returned two namespace allocations. The latest summary is stored in
-  `metrics-opencost.summary-lab`, and the portal marks data older than 30
-  minutes as `stale_eks_fargate`.
+  `metrics-opencost.summary-lab`; a 15-minute CronJob now refreshes it through
+  a private VPC peer path restricted to the EKS primary security group.
 - An Argo Workflow submitted directly and another submitted through the Argo
   Events webhook both completed successfully. Both retained
   `remediation_execution=blocked` and the human-review delay.
 - KEDA operator, metrics API server, and admission webhook are Ready.
-- The application-risk scan indexed 28 deduplicated signals into
-  `logs-security_application.risk-lab`: 4 Semgrep and 24 Syft signals. Trivy
-  reported zero current dependency CVEs. The live portal score was 65/100.
+- The latest live application-risk scan indexed 202 signals: 178 Polaris and
+  24 Syft. At verification time the portal held 206 signals, reported a score
+  of 75/100, and showed 15 open critical signals. Trivy secret scanning found
+  no secrets in the repository.
 - Terraform Enterprise database-password drift caused by RDS managed-secret
   rotation was repaired. A systemd timer now refreshes the Compose override
   from Secrets Manager every five minutes; the health check returned 200.
+- The Terraform Enterprise ALB permits only the approved operator CIDRs on
+  ports 80/443, and its `/_health_check` target is `healthy`.
+- Terraform state was migrated to the private, versioned, encrypted S3 bucket
+  `ibm-hc-lab-tfstate-063455554839-ap-northeast-2` at
+  `security-automation/lab/terraform.tfstate`. Remote state matched the local
+  migration snapshot and the post-migration plan returned no changes.
 
 ## Operational Scripts
 
@@ -113,7 +112,9 @@ The Vault Radar CLI is installed on the operator workstation, and the local lice
 
 `/Users/heobyeong-ug/Documents/HashiCorp License/vault-radar.hclic`
 
-The HCP Vault Radar agent pool has an active local agent. Phase 3 still needs actual source assignment in HCP Vault Radar, such as Git, Terraform Enterprise, S3, or a local source target.
+The HCP Vault Radar agent pool has an active local agent. Continuous TFE/S3
+source assignment still requires HCP-side configuration and approved source
+credentials.
 
 For local folder scans, use:
 
@@ -149,7 +150,7 @@ continuous data-source assignment still requires HCP Portal/API configuration.
 
 ## Observability Status
 
-The earlier Phase 4 MVP was deployed with the following recorded inventory:
+The Phase 4 runtime was redeployed and verified on 2026-07-14:
 
 - Instance: `i-0758e93b6bbde09fd`
 - URL: `http://ec2-3-38-142-233.ap-northeast-2.compute.amazonaws.com:3000`
@@ -158,7 +159,11 @@ The earlier Phase 4 MVP was deployed with the following recorded inventory:
 - Grafana admin credential secret: `ibm-hc-lab-observability/grafana-admin`
 - Running services: Prometheus, Grafana, Loki, Tempo, OpenTelemetry Collector
 
-The host uses the approved `hc-security-base-ubuntu-2204-20260629151937` AMI and reuses the existing `ibm-hc-lab-elastic-siem-instance-profile` for SSM access. Grafana and Prometheus health checks passed in the earlier deployment session. The new digest-pinned Compose artifact passed local config validation, but was not redeployed or health-checked against AWS on 2026-07-13 because the session token expired.
+The host uses the approved `hc-security-base-ubuntu-2204-20260629151937` AMI
+and reuses the existing `ibm-hc-lab-elastic-siem-instance-profile` for SSM
+access. The digest-pinned Compose runtime is active; Prometheus, Grafana, Loki,
+Tempo, and OpenTelemetry Collector passed local health checks, and Grafana's
+external API reported database `ok`.
 
 ## Phase 5-7 Runtime Status
 
@@ -183,18 +188,16 @@ The host uses the approved `hc-security-base-ubuntu-2204-20260629151937` AMI and
   Karpenter is not applicable to the Fargate-only cluster.
 - AWS EKS inventory on 2026-07-07 found one EKS cluster in `ap-northeast-2`:
   `ibm-hc-lab-test-eks`.
-- Vault Radar AWS lab inventory scan on 2026-07-07 covered 25 EC2 instances
-  and 1 EKS cluster with EC2 user-data export disabled; the wrapper summarized
-  16 findings without printing raw finding content.
+- Vault Radar AWS lab inventory scan on 2026-07-14 covered 26 EC2 instances,
+  16 allowlisted user-data exports, and 1 EKS cluster. It indexed 16 normalized
+  findings without retaining or printing raw secret-like content.
 - Continuous HCP Vault Radar source assignment, an application-risk scheduler,
   and live Vault PKI metadata still require external credentials or approval.
-  OpenCost scheduling and KRR/VPA/Goldilocks collectors are now code ready but
-  still require EKS reconciliation. Karpenter is intentionally not applicable
-  to this Fargate-only cluster.
+  Karpenter is intentionally not applicable to this Fargate-only cluster.
 
-## Final Local QA Snapshot (2026-07-13)
+## Final QA Snapshot (2026-07-14)
 
-- Repository validation passed: 109 Python tests, 3 frontend tests, TypeScript
+- Repository validation passed: 113 Python tests, 3 frontend tests, TypeScript
   production build, shell syntax and ShellCheck, Terraform formatting plus
   validation for lab/prod-like/cross-namespace environments.
 - Kubernetes QA found 31 resources across 15 files: 25 schema-valid and 6
@@ -204,11 +207,9 @@ The host uses the approved `hc-security-base-ubuntu-2204-20260629151937` AMI and
 - Semgrep reported 0 findings. Trivy secret scanning reported 0 findings after
   excluding ignored local Terraform state; the state files are mode `0600` and
   remain excluded from Git.
-- The expanded local application-risk scan produced 62 schema-valid signals:
-  34 Polaris, 4 Semgrep, and 24 Syft. Trivy and Grype reported no current
-  findings in that run.
+- The live application-risk run produced and indexed 202 schema-valid signals.
 - Browser QA passed at desktop and mobile breakpoints with no document overflow
   or console warnings. Kibana resolves to the deployed Kibana host, and portal
   dry-run actions remain blocked for review.
-- The previous live inventory found only `hc-base-*` or `hc-security-base-*`
-  AMIs and no EKS EC2 node groups; this was not re-queried after token expiry.
+- Live inventory found only `hc-base-*` or `hc-security-base-*` EC2 AMIs and no
+  EKS EC2 node groups. The final remote-state Terraform plan returned exit 0.

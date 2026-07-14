@@ -86,15 +86,18 @@ sed \
   -e "s/\.security-lab\.svc/.$NAMESPACE.svc/g" \
   "$ROOT_DIR/k8s/opencost/elastic-sync-cronjob.yaml" > "$rendered_manifest"
 
-apply_args=()
-if [[ "$DRY_RUN" == "true" ]]; then
-  apply_args+=(--dry-run=server)
-fi
+apply_resource() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    kubectl apply --dry-run=server "$@"
+  else
+    kubectl apply "$@"
+  fi
+}
 
 kubectl -n "$NAMESPACE" create secret generic opencost-elastic-ingest \
   --from-file="api-key=$api_key_file" \
   --dry-run=client -o yaml \
-  | kubectl apply "${apply_args[@]}" -f - >/dev/null
+  | apply_resource -f - >/dev/null
 
 verify_tls="true"
 [[ "$ELASTIC_URL" == http://* ]] && verify_tls="false"
@@ -105,9 +108,9 @@ kubectl -n "$NAMESPACE" create configmap opencost-elastic-sync-settings \
   --from-literal="window=$OPENCOST_WINDOW" \
   --from-literal="verify-tls=$verify_tls" \
   --dry-run=client -o yaml \
-  | kubectl apply "${apply_args[@]}" -f - >/dev/null
+  | apply_resource -f - >/dev/null
 
-kubectl apply "${apply_args[@]}" -f "$rendered_manifest" >/dev/null
+apply_resource -f "$rendered_manifest" >/dev/null
 
 if [[ "$DRY_RUN" != "true" ]]; then
   kubectl -n "$NAMESPACE" create job --from=cronjob/opencost-elastic-sync "opencost-elastic-sync-qa-$(date +%s)" >/dev/null

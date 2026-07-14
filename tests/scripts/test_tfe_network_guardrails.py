@@ -26,7 +26,7 @@ def test_tfe_readiness_accepts_only_http_200_and_exports_public_cert() -> None:
     main = (ROOT / "terraform/modules/terraform-enterprise/main.tf").read_text(encoding="utf-8")
     outputs = (ROOT / "terraform/modules/terraform-enterprise/outputs.tf").read_text(encoding="utf-8")
 
-    assert 'path                = "/api/v1/health/readiness"' in main
+    assert 'path                = "/_health_check"' in main
     assert 'matcher             = "200"' in main
     assert 'matcher             = "200-499"' not in main
     assert 'output "alb_certificate_pem"' in outputs

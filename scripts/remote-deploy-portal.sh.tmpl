@@ -3,12 +3,18 @@ export DEBIAN_FRONTEND=noninteractive
 REGION="__REGION__"
 ELASTIC_SECRET_ID="__ELASTIC_SECRET_ID__"
 PORTAL_PORT="__PORTAL_PORT__"
+ENABLE_ELASTIC_PEER_PROXY="__ENABLE_ELASTIC_PEER_PROXY__"
 INSTALL_DIR="/opt/security-portal"
 SECRET_FILE=""
+COMPOSE_DOWNLOAD=""
 
+# shellcheck disable=SC2329
 cleanup() {
   if [ -n "$SECRET_FILE" ]; then
     rm -f "$SECRET_FILE"
+  fi
+  if [ -n "$COMPOSE_DOWNLOAD" ]; then
+    rm -f "$COMPOSE_DOWNLOAD"
   fi
 }
 trap cleanup EXIT
@@ -21,19 +27,29 @@ if ! docker compose version >/dev/null 2>&1; then
     install -d -m 0755 /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins
     ARCH="$(uname -m)"
     case "$ARCH" in
-      aarch64|arm64) COMPOSE_ARCH="aarch64" ;;
-      x86_64|amd64) COMPOSE_ARCH="x86_64" ;;
+      aarch64|arm64)
+        COMPOSE_ARCH="aarch64"
+        COMPOSE_SHA256="d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137"
+        ;;
+      x86_64|amd64)
+        COMPOSE_ARCH="x86_64"
+        COMPOSE_SHA256="dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372"
+        ;;
       *) echo "Unsupported Docker Compose architecture: ${ARCH:-unknown}" >&2; exit 1 ;;
     esac
-    curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$COMPOSE_ARCH" -o /usr/local/lib/docker/cli-plugins/docker-compose
-    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+    COMPOSE_DOWNLOAD="$(mktemp /tmp/docker-compose.XXXXXX)"
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$COMPOSE_ARCH" -o "$COMPOSE_DOWNLOAD"
+    printf '%s  %s\n' "$COMPOSE_SHA256" "$COMPOSE_DOWNLOAD" | sha256sum -c - >/dev/null
+    install -m 0755 "$COMPOSE_DOWNLOAD" /usr/local/lib/docker/cli-plugins/docker-compose
+    rm -f "$COMPOSE_DOWNLOAD"
+    COMPOSE_DOWNLOAD=""
     ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
   fi
 fi
 
 systemctl enable --now docker
 mkdir -p "$INSTALL_DIR"
-rm -rf "$INSTALL_DIR"/*
+rm -rf "${INSTALL_DIR:?}"/*
 tar -xzf /tmp/security-portal-runtime.tar.gz -C "$INSTALL_DIR"
 
 SECRET_JSON="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$ELASTIC_SECRET_ID" --query SecretString --output text)"
@@ -59,6 +75,52 @@ done
 if [ "$elastic_ready" != "true" ]; then
   echo "Elasticsearch did not become ready for Filebeat provisioning" >&2
   exit 1
+fi
+
+if [ "$ENABLE_ELASTIC_PEER_PROXY" = "true" ]; then
+  PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+  if [ -z "$PRIVATE_IP" ]; then
+    echo "Unable to determine the Elastic host private IP" >&2
+    exit 1
+  fi
+  if [ ! -x /lib/systemd/systemd-socket-proxyd ]; then
+    echo "systemd-socket-proxyd is unavailable" >&2
+    exit 1
+  fi
+
+  {
+    printf '%s\n' '[Unit]'
+    printf '%s\n' 'Description=Private VPC listener for Elasticsearch'
+    printf '%s\n' 'After=network-online.target elastic-siem.service'
+    printf '\n'
+    printf '%s\n' '[Socket]'
+    printf 'ListenStream=%s:9200\n' "$PRIVATE_IP"
+    printf '%s\n' 'NoDelay=true'
+    printf '\n'
+    printf '%s\n' '[Install]'
+    printf '%s\n' 'WantedBy=sockets.target'
+  } > /etc/systemd/system/elastic-peer-proxy.socket
+
+  {
+    printf '%s\n' '[Unit]'
+    printf '%s\n' 'Description=Private VPC proxy to loopback Elasticsearch'
+    printf '%s\n' 'Requires=elastic-siem.service'
+    printf '%s\n' 'After=elastic-siem.service'
+    printf '\n'
+    printf '%s\n' '[Service]'
+    printf '%s\n' 'ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:9200'
+    printf '%s\n' 'NoNewPrivileges=true'
+    printf '%s\n' 'PrivateDevices=true'
+    printf '%s\n' 'PrivateTmp=true'
+    printf '%s\n' 'ProtectHome=true'
+    printf '%s\n' 'ProtectSystem=strict'
+    printf '%s\n' 'RestrictAddressFamilies=AF_INET AF_INET6'
+    printf '%s\n' 'RestrictNamespaces=true'
+  } > /etc/systemd/system/elastic-peer-proxy.service
+
+  systemctl daemon-reload
+  systemctl enable --now elastic-peer-proxy.socket
+  curl -fsS -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" "http://$PRIVATE_IP:9200/_cluster/health" >/dev/null
 fi
 
 filebeat_key_ready=false
@@ -150,6 +212,15 @@ if [ "$SECRET_CHANGED" = "true" ]; then
   SECRET_FILE=""
 fi
 
+FILEBEAT_CONFIG_API_KEY="$(printf '%s' "$FILEBEAT_API_KEY" | base64 -d 2>/dev/null || true)"
+case "$FILEBEAT_CONFIG_API_KEY" in
+  *:*) ;;
+  *)
+    echo "Filebeat API key is not a valid encoded id:key pair" >&2
+    exit 1
+    ;;
+esac
+
 {
   printf 'ELASTIC_URL=%s\n' 'http://127.0.0.1:9200'
   printf 'ELASTIC_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_read_api_key // empty')"
@@ -174,10 +245,11 @@ fi
 chmod 600 "$INSTALL_DIR/backend.env"
 
 {
-  printf 'ELASTIC_FILEBEAT_URL=%s\n' 'http://host.docker.internal:9200'
-  printf 'ELASTIC_FILEBEAT_API_KEY=%s\n' "$FILEBEAT_API_KEY"
+  printf 'ELASTIC_FILEBEAT_URL=%s\n' 'http://127.0.0.1:9200'
+  printf 'ELASTIC_FILEBEAT_API_KEY=%s\n' "$FILEBEAT_CONFIG_API_KEY"
 } > "$INSTALL_DIR/filebeat.env"
 chmod 600 "$INSTALL_DIR/filebeat.env"
+unset FILEBEAT_CONFIG_API_KEY
 
 {
   printf '%s\n' '[Unit]'
@@ -202,11 +274,13 @@ systemctl daemon-reload
 systemctl enable security-portal
 systemctl restart security-portal
 docker compose -f "$INSTALL_DIR/docker-compose.yml" ps
-for attempt in $(seq 1 30); do
+attempt=1
+while [ "$attempt" -le 30 ]; do
   if curl -fsS "http://127.0.0.1:$PORTAL_PORT/health" >/dev/null \
     && docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx filebeat; then
     exit 0
   fi
+  attempt=$((attempt + 1))
   sleep 2
 done
 

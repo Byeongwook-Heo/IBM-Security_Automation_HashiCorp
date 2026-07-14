@@ -27,7 +27,7 @@ Heavy IBM components are represented by lighter open source or self-managed equi
 
 Status terms in this document are deliberate:
 
-- **Live** means the AWS/EKS runtime was verified in an earlier operator session.
+- **Live** means the AWS/EKS runtime was verified on 2026-07-14.
 - **Code ready** means implementation and local QA passed, but the current AWS
   runtime has not been reconciled with that code.
 - **External input** means a token, product-side source assignment, or explicit
@@ -35,8 +35,7 @@ Status terms in this document are deliberate:
 
 ### Phase 0: Inventory and Baseline
 
-Status: code complete for the 2026-07-13 snapshot. A live refresh is pending a
-new short-lived AWS session token.
+Status: live inventory and approved-AMI policy verified on 2026-07-14.
 
 - Confirm AWS region, account, approved AMIs, key pairs, and existing instances.
 - Document existing Terraform Enterprise, Vault, Keycloak, and portal endpoints.
@@ -44,9 +43,8 @@ new short-lived AWS session token.
 
 ### Phase 1: Elastic SIEM
 
-Status: Elastic and Kibana were previously deployed and verified. The hardened
-portal runtime and dedicated Filebeat ingest/read API-key path are code ready,
-but have not been redeployed in the current session.
+Status: live. Elastic, Kibana, the hardened portal runtime, and Filebeat were
+deployed and verified end to end.
 
 - Deploy a single-node Elastic/Kibana lab stack on an approved `hc-security-base-*` or `hc-base-*` AMI.
 - Store generated Elastic bootstrap credentials in AWS Secrets Manager.
@@ -57,8 +55,8 @@ but have not been redeployed in the current session.
 
 ### Phase 2: Guardium Replacement MVP
 
-Status: live and previously verified end to end. Current AWS health was not
-rechecked after the operator token expired.
+Status: live and verified end to end. RDS is private, encrypted, and available;
+the portal exposes current DB and Vault audit events.
 
 - Deploy PostgreSQL for the data security scenario.
 - Enable `pgAudit`.
@@ -68,9 +66,9 @@ rechecked after the operator token expired.
 
 ### Phase 3: Vault Radar
 
-Status: the HCP agent and one-off local/AWS inventory scans were previously
-verified. Continuous HCP source assignment for TFE/S3 remains external, and
-fresh TFE/AWS credentials are required for another live scan.
+Status: the HCP agent and one-off local/AWS inventory scans are verified. The
+latest AWS scan covered 26 EC2 instances and one EKS cluster and indexed 16
+findings. Continuous HCP source assignment for TFE/S3 remains external.
 
 - Connect Vault Radar to Git, Terraform Enterprise, S3, or local source targets.
 - Ingest Secret and PII findings into the portal.
@@ -87,19 +85,17 @@ fresh TFE/AWS credentials are required for another live scan.
 
 ### Phase 4: Observability
 
-Status: an observability host and EKS Prometheus/Blackbox monitoring were
-previously deployed. A hardened, repeatable Prometheus/Grafana/Loki/Tempo/OTel
-Compose runtime is code ready and locally validated; SSM redeployment and live
-health verification are pending a valid AWS token.
+Status: live. The hardened Prometheus/Grafana/Loki/Tempo/OTel Compose runtime
+and EKS Prometheus/Blackbox monitoring passed live health checks.
 
 - Deploy Prometheus, Grafana, OpenTelemetry Collector, Loki, Tempo, and Alertmanager.
 - Feed service health, logs, traces, and alerts into the portal.
 
 ### Phase 5: Cost and Optimization
 
-Status: EKS Fargate, OpenCost, Prometheus, Argo, and KEDA were previously live.
-The durable OpenCost-to-Elastic CronJob plus KRR and recommendation-only
-VPA/Goldilocks collectors are code ready but not yet reconciled to EKS.
+Status: live. EKS Fargate, OpenCost, Prometheus, Argo, KEDA, Goldilocks, and the
+VPA recommender are Ready. OpenCost syncs to Elastic every 15 minutes; KRR/VPA
+recommendation collectors are installed without automatic mutation.
 
 - Deploy OpenCost for Kubernetes cost visibility.
 - Add KRR or Goldilocks recommendations.
@@ -121,11 +117,9 @@ VPA/Goldilocks collectors are code ready but not yet reconciled to EKS.
 
 ### Phase 6: Concert Replacement Portal
 
-Status: the earlier live MVP contains 28 Semgrep/Syft signals. The expanded
-local pipeline now covers Trivy, Grype, Syft, Semgrep, Polaris, kube-bench,
-cert-manager, Vault PKI, Velero, and Chaos inputs; local QA generated 62
-schema-valid signals. Live Elastic ingest and portal redeployment remain
-pending a valid AWS token.
+Status: live for Trivy/Syft/Semgrep/Polaris collection and portal scoring. The
+latest scan indexed 202 signals; the portal reported 206 total signals and a
+75/100 score at verification time. Live Vault PKI input remains external.
 
 - Collect Trivy, Grype, Syft, Semgrep, kube-bench, Polaris, certificate, backup, and resilience results.
 - Build an application risk score in the Information Security Portal.
@@ -143,7 +137,7 @@ pending a valid AWS token.
 
 ### Phase 7: Automation Demo
 
-Status: Argo Workflows/Events and KEDA were previously live. StackStorm now has
+Status: Argo Workflows/Events and KEDA are live. StackStorm has
 a disabled-by-default private EC2 review-host module and a staged pack, but no
 StackStorm software is automatically installed. Every portal action remains
 dry-run and execution-blocked.
@@ -158,9 +152,8 @@ dry-run and execution-blocked.
 
 ### Phase 8: Documentation and Git Hygiene
 
-Status: local documentation, QA, remote-state migration tooling, and CI are
-code ready. S3 state migration and the final AWS deployment record must wait
-for a valid token; Git branch/commit/push is handled separately from AWS apply.
+Status: documentation, QA, CI, and guarded S3 remote state are complete. Git
+branch/commit/push is handled separately from AWS deployment.
 
 - Maintain `docs/architecture.md`, `docs/lab-deployment-status.md`, and this
   phase plan as the deployment record.
@@ -171,10 +164,6 @@ for a valid token; Git branch/commit/push is handled separately from AWS apply.
 
 ## Current Deployment Gates
 
-- Replace the expired AWS session token before any Terraform plan/apply, SSM
-  deployment, EKS reconciliation, or remote-state migration.
-- Apply the restricted Terraform Enterprise ALB CIDR change before treating
-  the current TFE endpoint as hardened.
 - Provide the TFE organization/token and trusted CA material for the Radar TFE
   variable scan, and approve S3 read permissions/source assignment.
 - Provide a Keycloak realm/client configuration before enabling full portal

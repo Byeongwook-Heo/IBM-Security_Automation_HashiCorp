@@ -66,11 +66,31 @@ services:
       start_period: 20s
     mem_limit: 1024m
 
+  tempo-init:
+    <<: *runtime-defaults
+    image: grafana/grafana:11.4.0@sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb
+    user: "0:0"
+    restart: "no"
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        chown -R 10001:10001 /var/tempo
+        chmod 0750 /var/tempo
+    volumes:
+      - tempo-data:/var/tempo
+
   tempo:
     <<: *runtime-defaults
     image: grafana/tempo:2.6.1@sha256:ef4384fce6e8ad22b95b243d8fc165628cda655376fd50e7850536ad89d71d50
     command:
       - -config.file=/etc/tempo/tempo.yml
+    depends_on:
+      tempo-init:
+        condition: service_completed_successfully
     ports:
       - "${TEMPO_BIND_ADDRESS:-127.0.0.1}:${TEMPO_PORT:-3200}:3200"
     expose:

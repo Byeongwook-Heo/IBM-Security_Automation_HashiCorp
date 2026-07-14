@@ -7,8 +7,11 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from .assistant import generate_assistant_response
 from .auth import current_user, require_role
 from .models import (
+    AssistantChatRequest,
+    AssistantChatResponse,
     CommonEvent,
     ObservabilityLink,
     ObservabilityLinksResponse,
@@ -255,6 +258,10 @@ def vault_radar_findings(limit: int = Query(50, ge=1, le=500)):
 def vault_radar_sources(): return repo.vault_radar_sources
 @app.get("/api/enterprise/status")
 def enterprise(): return enterprise_status()
+@app.post("/api/assistant/chat", response_model=AssistantChatResponse)
+def assistant_chat(req: AssistantChatRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "AUDITOR"])
+    return generate_assistant_response(req)
 @app.post("/api/workflows/cases")
 def create_case(req: WorkflowRequest, user=Depends(current_user)):
     require_role(user,["SOC_ADMIN","SECURITY_ANALYST"]); return {"case_id":"case-demo-1","status":"created","dry_run":req.dry_run}

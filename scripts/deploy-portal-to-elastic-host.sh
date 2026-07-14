@@ -13,6 +13,10 @@ LOKI_URL="${LOKI_URL:-}"
 TEMPO_URL="${TEMPO_URL:-}"
 ENABLE_ELASTIC_PEER_PROXY="${ENABLE_ELASTIC_PEER_PROXY:-true}"
 PORTAL_AUTH_MODE="${PORTAL_AUTH_MODE:-deny}"
+AI_ASSISTANT_PROVIDER="${AI_ASSISTANT_PROVIDER:-evidence}"
+AI_ASSISTANT_MODEL_ID="${AI_ASSISTANT_MODEL_ID:-}"
+AI_ASSISTANT_REGION="${AI_ASSISTANT_REGION:-$REGION}"
+AI_ASSISTANT_MAX_TOKENS="${AI_ASSISTANT_MAX_TOKENS:-700}"
 
 if [[ -z "$ADMIN_CIDR" ]]; then
   echo "ADMIN_CIDR is required, for example ADMIN_CIDR=121.190.86.98/32" >&2
@@ -26,6 +30,32 @@ fi
 
 if [[ "$PORTAL_AUTH_MODE" != "deny" && "$PORTAL_AUTH_MODE" != "trusted_headers" ]]; then
   echo "PORTAL_AUTH_MODE must be deny or trusted_headers for this deployment" >&2
+  exit 1
+fi
+
+if [[ "$AI_ASSISTANT_PROVIDER" != "evidence" && "$AI_ASSISTANT_PROVIDER" != "bedrock" ]]; then
+  echo "AI_ASSISTANT_PROVIDER must be evidence or bedrock" >&2
+  exit 1
+fi
+
+if [[ "$AI_ASSISTANT_PROVIDER" == "bedrock" && -z "$AI_ASSISTANT_MODEL_ID" ]]; then
+  echo "AI_ASSISTANT_MODEL_ID is required when AI_ASSISTANT_PROVIDER=bedrock" >&2
+  exit 1
+fi
+
+if [[ ! "$AI_ASSISTANT_MODEL_ID" =~ ^[A-Za-z0-9._:/-]*$ ]]; then
+  echo "AI_ASSISTANT_MODEL_ID contains unsupported characters" >&2
+  exit 1
+fi
+
+if [[ ! "$AI_ASSISTANT_REGION" =~ ^[a-z0-9-]+$ ]]; then
+  echo "AI_ASSISTANT_REGION must be a valid AWS region name" >&2
+  exit 1
+fi
+
+if [[ ! "$AI_ASSISTANT_MAX_TOKENS" =~ ^[0-9]+$ ]] \
+  || (( AI_ASSISTANT_MAX_TOKENS < 128 || AI_ASSISTANT_MAX_TOKENS > 1200 )); then
+  echo "AI_ASSISTANT_MAX_TOKENS must be an integer between 128 and 1200" >&2
   exit 1
 fi
 
@@ -128,6 +158,10 @@ REMOTE_SCRIPT="$(
   TEMPO_URL="$TEMPO_URL" \
   ENABLE_ELASTIC_PEER_PROXY="$ENABLE_ELASTIC_PEER_PROXY" \
   PORTAL_AUTH_MODE="$PORTAL_AUTH_MODE" \
+  AI_ASSISTANT_PROVIDER="$AI_ASSISTANT_PROVIDER" \
+  AI_ASSISTANT_MODEL_ID="$AI_ASSISTANT_MODEL_ID" \
+  AI_ASSISTANT_REGION="$AI_ASSISTANT_REGION" \
+  AI_ASSISTANT_MAX_TOKENS="$AI_ASSISTANT_MAX_TOKENS" \
   python3 - "$ROOT_DIR/scripts/remote-deploy-portal.sh.tmpl" <<'PY'
 import os
 import sys
@@ -146,6 +180,10 @@ for key in (
     "TEMPO_URL",
     "ENABLE_ELASTIC_PEER_PROXY",
     "PORTAL_AUTH_MODE",
+    "AI_ASSISTANT_PROVIDER",
+    "AI_ASSISTANT_MODEL_ID",
+    "AI_ASSISTANT_REGION",
+    "AI_ASSISTANT_MAX_TOKENS",
 ):
     text = text.replace(f"__{key}__", os.environ[key])
 

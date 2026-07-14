@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/main";
 
@@ -262,5 +262,76 @@ describe("security portal", () => {
     expect(await screen.findByText("보안 점수")).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute("lang", "ko");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  });
+
+  it("opens the AI analyst with selected context and renders grounded evidence", async () => {
+    let assistantRequest: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (init?.method === "POST" && url.pathname === "/api/assistant/chat") {
+          assistantRequest = JSON.parse(String(init.body));
+          return jsonResponse({
+            message_id: "assistant-test",
+            answer: "The selected signal is critical and requires ownership validation.",
+            provider: "evidence-engine",
+            confidence: "high",
+            evidence: [
+              { label: "Risk score", value: "95/100", source: "/api/vault-radar/findings" },
+            ],
+            recommendations: [
+              {
+                title: "Review a Vault onboarding plan",
+                detail: "Keep the proposed change in review-only mode.",
+                action_id: "secret-to-vault-registration",
+              },
+            ],
+            follow_up_prompts: ["Explain the strongest evidence"],
+            human_review_required: true,
+            notice: "No external model is connected; this response uses verified evidence mode.",
+          });
+        }
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 80, elastic_enabled: false });
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") {
+          return jsonResponse({});
+        }
+        return jsonResponse([]);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+
+    const dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    expect(within(dialog).getByText("Secret Exposure")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Explain the current risk" }));
+
+    expect(await within(dialog).findByText("The selected signal is critical and requires ownership validation.")).toBeInTheDocument();
+    expect(within(dialog).getByText("95/100")).toBeInTheDocument();
+    expect(within(dialog).getByText("Review a Vault onboarding plan")).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: "Review dry-run action" })).toHaveAttribute("href", "#automation");
+    expect(assistantRequest).toMatchObject({
+      locale: "en",
+      context: { kind: "finding", risk_score: 95 },
+    });
+    expect(JSON.stringify(assistantRequest)).not.toContain("sourceIp");
+    expect(JSON.stringify(assistantRequest)).not.toContain("raw_event");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close AI analyst" }));
+    expect(screen.queryByRole("dialog", { name: "AI Security Analyst" })).not.toBeInTheDocument();
   });
 });

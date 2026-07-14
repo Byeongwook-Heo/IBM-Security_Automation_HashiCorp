@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from app import assistant
 from app import main
 from app.elastic_repository import (
     ElasticRepository,
@@ -19,6 +20,8 @@ def mock_mode(monkeypatch):
     monkeypatch.setenv("PORTAL_ALLOW_INSECURE_LAB_AUTH", "true")
     for variable in ("GRAFANA_URL", "LOKI_URL", "TEMPO_URL", "PROMETHEUS_URL"):
         monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "evidence")
+    monkeypatch.delenv("AI_ASSISTANT_MODEL_ID", raising=False)
     monkeypatch.setattr(main, "_elastic_repo", lambda: None)
     main.repo.audit_events.clear()
 
@@ -67,6 +70,122 @@ def test_mutations_reject_unauthorized_role(monkeypatch):
         headers=headers,
     )
     assert response.status_code == 403
+
+
+def test_assistant_requires_configured_auth(monkeypatch):
+    monkeypatch.setenv("PORTAL_AUTH_MODE", "deny")
+
+    response = client.post('/api/assistant/chat', json={'message': 'Summarize risk'})
+
+    assert response.status_code == 401
+
+
+def test_assistant_returns_grounded_finding_analysis():
+    response = client.post(
+        '/api/assistant/chat',
+        json={
+            'message': 'What happened and what should I review?',
+            'locale': 'en',
+            'context': {
+                'kind': 'finding',
+                'id': 'finding-1',
+                'title': 'Secret exposure',
+                'severity': 'critical',
+                'risk_score': 95,
+                'source': 'Vault Radar',
+                'resource': 'repo/terraform/envs/lab/main.tf',
+                'status': 'open',
+                'details': {'type': 'terraform', 'owner': 'platform-security'},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data['provider'] == 'evidence-engine'
+    assert data['confidence'] == 'high'
+    assert data['human_review_required'] is True
+    assert any(item['source'] == '/api/vault-radar/findings' for item in data['evidence'])
+    assert any(item['action_id'] == 'secret-to-vault-registration' for item in data['recommendations'])
+    assert 'does not prove compromise' in data['answer']
+
+
+def test_assistant_redacts_secret_material_from_evidence():
+    response = client.post(
+        '/api/assistant/chat',
+        json={
+            'message': 'Explain token=top-secret-token-value',
+            'context': {
+                'kind': 'finding',
+                'id': 'finding-secret',
+                'title': 'password=hunter2-password',
+                'severity': 'high',
+                'risk_score': 70,
+                'resource': 'Bearer abcdefghijklmnopqrstuvwxyz123456',
+                'details': {'owner': 'security'},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'hunter2-password' not in body
+    assert 'abcdefghijklmnopqrstuvwxyz123456' not in body
+    assert '[REDACTED]' in body
+
+
+def test_assistant_bedrock_adapter_sends_and_returns_redacted_text(monkeypatch):
+    captured = {}
+    github_token = 'github_pat_11AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWN1cml0eSJ9.signature12345678'
+    vault_token = 'hvs.ABCDEFGHIJKLMNOPQRSTUVWXYZ123456'
+    aws_secret = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+    class FakeBedrock:
+        def converse(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                'output': {
+                    'message': {
+                        'content': [{'text': 'Review token=returned-secret-value before proceeding.'}],
+                    },
+                },
+            }
+
+    monkeypatch.setenv('AI_ASSISTANT_PROVIDER', 'bedrock')
+    monkeypatch.setenv('AI_ASSISTANT_MODEL_ID', 'example.security-model-v1')
+    monkeypatch.setattr(assistant, '_bedrock_client', lambda region: FakeBedrock())
+
+    response = client.post(
+        '/api/assistant/chat',
+        json={
+            'message': (
+                'Analyze Bearer user-supplied-secret-token '
+                f'AWS_SECRET_ACCESS_KEY={aws_secret} {github_token} {jwt}'
+            ),
+            'history': [{'role': 'assistant', 'content': f'Previous token {vault_token}'}],
+            'context': {
+                'kind': 'dashboard',
+                'title': 'Lab posture',
+                'details': {'security_score': 64, 'critical_findings': 3, 'unexpected': 'ignored'},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    prompt = captured['messages'][0]['content'][0]['text']
+    assert data['provider'] == 'amazon-bedrock'
+    assert data['model'] == 'example.security-model-v1'
+    assert 'returned-secret-value' not in data['answer']
+    assert 'user-supplied-secret-token' not in prompt
+    assert aws_secret not in prompt
+    assert github_token not in prompt
+    assert jwt not in prompt
+    assert vault_token not in prompt
+    assert 'unexpected' not in prompt
+    assert '[REDACTED]' in data['answer']
+    assert 'including the question, conversation, and evidence' in captured['system'][0]['text']
 
 
 def test_live_qradar_without_destination_fails_closed(monkeypatch):

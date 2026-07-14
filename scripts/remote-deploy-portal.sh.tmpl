@@ -241,6 +241,10 @@ esac
   printf 'LOKI_URL=%s\n' '__LOKI_URL__'
   printf 'TEMPO_URL=%s\n' '__TEMPO_URL__'
   printf 'PORTAL_AUTH_MODE=%s\n' '__PORTAL_AUTH_MODE__'
+  printf 'AI_ASSISTANT_PROVIDER=%s\n' '__AI_ASSISTANT_PROVIDER__'
+  printf 'AI_ASSISTANT_MODEL_ID=%s\n' '__AI_ASSISTANT_MODEL_ID__'
+  printf 'AI_ASSISTANT_REGION=%s\n' '__AI_ASSISTANT_REGION__'
+  printf 'AI_ASSISTANT_MAX_TOKENS=%s\n' '__AI_ASSISTANT_MAX_TOKENS__'
 } > "$INSTALL_DIR/backend.env"
 chmod 600 "$INSTALL_DIR/backend.env"
 

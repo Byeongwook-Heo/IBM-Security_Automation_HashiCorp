@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  Bot,
   Database,
   ExternalLink,
   FileBadge2,
@@ -15,10 +16,14 @@ import {
   Package,
   Radar,
   Search,
+  Send,
   ShieldCheck,
+  Sparkles,
   Sun,
+  Trash2,
   UserRound,
   Workflow,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { PreferencesProvider, usePreferences } from "./i18n";
@@ -202,6 +207,53 @@ type DryRunResult = {
 type DryRunTarget = {
   targetId?: string;
   reason?: string;
+};
+
+type AssistantContextKind = "dashboard" | "finding" | "db_audit";
+
+type AssistantContext = {
+  kind: AssistantContextKind;
+  id?: string;
+  title?: string;
+  severity?: string;
+  riskScore?: number;
+  source?: string;
+  resource?: string;
+  status?: string;
+  observedAt?: string;
+  details: Record<string, string | number | boolean | null | undefined>;
+};
+
+type AssistantEvidence = {
+  label: string;
+  value: string;
+  source: string;
+};
+
+type AssistantRecommendation = {
+  title: string;
+  detail: string;
+  actionId?: string;
+};
+
+type AssistantReply = {
+  messageId: string;
+  answer: string;
+  provider: "evidence-engine" | "amazon-bedrock";
+  model?: string;
+  confidence: "low" | "medium" | "high";
+  evidence: AssistantEvidence[];
+  recommendations: AssistantRecommendation[];
+  followUpPrompts: string[];
+  humanReviewRequired: boolean;
+  notice?: string;
+};
+
+type AssistantConversationMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reply?: AssistantReply;
 };
 
 type Finding = {
@@ -831,6 +883,12 @@ function PortalApp() {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState("");
   const [isRunningDryRun, setIsRunningDryRun] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantContextKind, setAssistantContextKind] = useState<AssistantContextKind>("finding");
+  const [assistantMessages, setAssistantMessages] = useState<AssistantConversationMessage[]>([]);
+  const [assistantInput, setAssistantInput] = useState("");
+  const [assistantError, setAssistantError] = useState("");
+  const [assistantLoading, setAssistantLoading] = useState(false);
 
   useEffect(() => {
     document.title = t("Information Security Portal");
@@ -928,6 +986,23 @@ function PortalApp() {
     dashboard.dryRunActions.find((action) => action.id === selectedActionId) ??
     dashboard.dryRunActions[0];
   const kibanaHref = dashboard.summary.kibana_url || "";
+  const assistantContext = useMemo(
+    () =>
+      createAssistantContext(
+        assistantContextKind,
+        dashboard,
+        selectedFinding,
+        selectedAuditEvent,
+        localizedLabel,
+      ),
+    [
+      assistantContextKind,
+      dashboard,
+      localizedLabel,
+      selectedAuditEvent,
+      selectedFinding,
+    ],
+  );
 
   function defaultTargetIdForAction(action: DryRunAction): string {
     if (action.targetType === "vault-radar-finding") {
@@ -966,9 +1041,54 @@ function PortalApp() {
     }
   }
 
+  function handleAssistantContextChange(kind: AssistantContextKind) {
+    setAssistantContextKind(kind);
+    setAssistantMessages([]);
+    setAssistantError("");
+    setAssistantInput("");
+  }
+
+  async function handleAssistantSend(suggestedMessage?: string) {
+    const message = (suggestedMessage ?? assistantInput).trim();
+    if (!message || assistantLoading) return;
+
+    const history = assistantMessages.slice(-8).map(({ role, content }) => ({ role, content }));
+    const userMessage: AssistantConversationMessage = {
+      id: createAssistantMessageId("user"),
+      role: "user",
+      content: message,
+    };
+    setAssistantMessages((current) => [...current, userMessage]);
+    setAssistantInput("");
+    setAssistantError("");
+    setAssistantLoading(true);
+
+    try {
+      const reply = await postAssistantChat({
+        message,
+        locale,
+        context: assistantContext,
+        history,
+      });
+      setAssistantMessages((current) => [
+        ...current,
+        {
+          id: reply.messageId,
+          role: "assistant",
+          content: reply.answer,
+          reply,
+        },
+      ]);
+    } catch (error) {
+      setAssistantError(error instanceof Error ? error.message : t("AI analysis request failed"));
+    } finally {
+      setAssistantLoading(false);
+    }
+  }
+
   if (loadState.status === "loading") {
     return (
-      <Shell dashboard={dashboard} kibanaHref="#stream-health">
+      <Shell dashboard={dashboard} kibanaHref="#stream-health" assistantEnabled={false}>
         <section className="state-panel" aria-live="polite">
           <div className="spinner" aria-hidden="true" />
           <h1>{t("Loading telemetry")}</h1>
@@ -979,7 +1099,14 @@ function PortalApp() {
   }
 
   return (
-    <Shell dashboard={dashboard} kibanaHref={kibanaHref}>
+    <>
+    <Shell
+      dashboard={dashboard}
+      kibanaHref={kibanaHref}
+      assistantOpen={assistantOpen}
+      assistantEnabled
+      onAssistantToggle={() => setAssistantOpen((current) => !current)}
+    >
       {loadState.message ? (
         <div className="notice" role="status">
           <span className="status-dot status-dot--warning" aria-hidden="true" />
@@ -1209,16 +1336,40 @@ function PortalApp() {
         </div>
       </section>
     </Shell>
+    <AssistantPanel
+      open={assistantOpen}
+      context={assistantContext}
+      contextKind={assistantContextKind}
+      messages={assistantMessages}
+      input={assistantInput}
+      error={assistantError}
+      loading={assistantLoading}
+      onClose={() => setAssistantOpen(false)}
+      onContextChange={handleAssistantContextChange}
+      onInputChange={setAssistantInput}
+      onClear={() => {
+        setAssistantMessages([]);
+        setAssistantError("");
+      }}
+      onSend={handleAssistantSend}
+    />
+    </>
   );
 }
 
 function Shell({
   dashboard,
   kibanaHref,
+  assistantOpen = false,
+  assistantEnabled = true,
+  onAssistantToggle,
   children,
 }: {
   dashboard: DashboardData;
   kibanaHref: string;
+  assistantOpen?: boolean;
+  assistantEnabled?: boolean;
+  onAssistantToggle?: () => void;
   children: React.ReactNode;
 }) {
   const { locale, theme, setLocale, setTheme, t, label } = usePreferences();
@@ -1345,6 +1496,18 @@ function Shell({
               <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
               {label(healthState)}
             </span>
+            <button
+              className={`action-button action-button--icon assistant-trigger${assistantOpen ? " assistant-trigger--active" : ""}`}
+              type="button"
+              aria-label={t(assistantOpen ? "Close AI analyst" : "Open AI analyst")}
+              aria-pressed={assistantOpen}
+              title={t(assistantOpen ? "Close AI analyst" : "Open AI analyst")}
+              disabled={!assistantEnabled || !onAssistantToggle}
+              onClick={onAssistantToggle}
+            >
+              <Bot size={18} aria-hidden="true" />
+              {t("AI Analyst")}
+            </button>
             {externalKibanaHref ? (
               <a className="action-button action-button--icon" href={externalKibanaHref} target="_blank" rel="noreferrer">
                 <Icon name="external" />
@@ -1370,6 +1533,282 @@ function Shell({
           <a href="#kubernetes-optimization">{t("Optimization")}</a>
         </footer>
       </div>
+    </div>
+  );
+}
+
+function AssistantPanel({
+  open,
+  context,
+  contextKind,
+  messages,
+  input,
+  error,
+  loading,
+  onClose,
+  onContextChange,
+  onInputChange,
+  onClear,
+  onSend,
+}: {
+  open: boolean;
+  context: AssistantContext;
+  contextKind: AssistantContextKind;
+  messages: AssistantConversationMessage[];
+  input: string;
+  error: string;
+  loading: boolean;
+  onClose: () => void;
+  onContextChange: (kind: AssistantContextKind) => void;
+  onInputChange: (value: string) => void;
+  onClear: () => void;
+  onSend: (message?: string) => Promise<void>;
+}) {
+  const { t, label } = usePreferences();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const latestReply = [...messages].reverse().find((message) => message.reply)?.reply;
+  const providerLabel = latestReply?.provider === "amazon-bedrock" ? "Amazon Bedrock" : t("Evidence grounded");
+  const contextOptions: Array<{ kind: AssistantContextKind; label: string }> = [
+    { kind: "dashboard", label: t("Dashboard") },
+    { kind: "finding", label: t("Finding") },
+    { kind: "db_audit", label: t("DB audit") },
+  ];
+  const quickPrompts = [
+    t("Explain the current risk"),
+    t("Show the strongest evidence"),
+    t("Recommend reviewed next steps"),
+  ];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    inputRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose, open]);
+
+  useEffect(() => {
+    if (!open || !messagesRef.current) return;
+    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [loading, messages, open]);
+
+  if (!open) return null;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void onSend();
+  }
+
+  return (
+    <div className="assistant-layer">
+      <button className="assistant-backdrop" type="button" aria-label={t("Close AI analyst")} onClick={onClose} />
+      <aside
+        className="assistant-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="assistant-title"
+      >
+        <header className="assistant-header">
+          <div className="assistant-heading">
+            <span className="assistant-heading__icon" aria-hidden="true">
+              <Bot size={20} />
+            </span>
+            <div>
+              <h2 id="assistant-title">{t("AI Security Analyst")}</h2>
+              <span>{providerLabel}</span>
+            </div>
+          </div>
+          <div className="assistant-header__actions">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("Clear conversation")}
+              title={t("Clear conversation")}
+              disabled={messages.length === 0 || loading}
+              onClick={onClear}
+            >
+              <Trash2 size={17} aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("Close AI analyst")}
+              title={t("Close AI analyst")}
+              onClick={onClose}
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
+        <div className="assistant-context">
+          <div className="assistant-segments" role="group" aria-label={t("Analysis context")}>
+            {contextOptions.map((option) => (
+              <button
+                type="button"
+                className={option.kind === contextKind ? "is-active" : ""}
+                aria-pressed={option.kind === contextKind}
+                key={option.kind}
+                onClick={() => onContextChange(option.kind)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="assistant-context__selection">
+            <span>{t("Current context")}</span>
+            <strong>{t(context.title || "Security posture")}</strong>
+            {context.riskScore !== undefined ? (
+              <span className={`severity-pill severity-pill--${context.severity || "medium"}`}>
+                {context.riskScore} / 100
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="assistant-conversation" ref={messagesRef} aria-live="polite">
+          {messages.length === 0 ? (
+            <div className="assistant-empty">
+              <span className="assistant-empty__icon" aria-hidden="true">
+                <Sparkles size={22} />
+              </span>
+              <strong>{t("Ready to analyze {context}", { context: t(context.title || "Security posture") })}</strong>
+              <span>{t("Secret values are excluded and all actions remain review-only.")}</span>
+              <div className="assistant-prompts" aria-label={t("Suggested questions")}>
+                {quickPrompts.map((prompt) => (
+                  <button type="button" key={prompt} disabled={loading} onClick={() => void onSend(prompt)}>
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {messages.map((message) =>
+            message.role === "user" ? (
+              <div className="assistant-message assistant-message--user" key={message.id}>
+                <span>{t("You")}</span>
+                <p>{message.content}</p>
+              </div>
+            ) : (
+              <article className="assistant-message assistant-message--analyst" key={message.id}>
+                <div className="assistant-message__meta">
+                  <span className="assistant-message__avatar" aria-hidden="true">
+                    <Bot size={16} />
+                  </span>
+                  <strong>{t("AI Analyst")}</strong>
+                  <span>{message.reply?.provider === "amazon-bedrock" ? "Amazon Bedrock" : t("Evidence mode")}</span>
+                </div>
+                <p className="assistant-answer">{message.content}</p>
+                {message.reply?.notice ? <p className="assistant-notice">{message.reply.notice}</p> : null}
+
+                {message.reply?.evidence.length ? (
+                  <section className="assistant-evidence" aria-label={t("Verified evidence")}>
+                    <h3>{t("Verified evidence")}</h3>
+                    <dl>
+                      {message.reply.evidence.map((item, index) => (
+                        <div key={`${message.id}-evidence-${index}`}>
+                          <dt>{item.label}</dt>
+                          <dd>{item.value}</dd>
+                          <dd className="assistant-evidence__source">{item.source}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                ) : null}
+
+                {message.reply?.recommendations.length ? (
+                  <section className="assistant-recommendations" aria-label={t("Reviewed next steps")}>
+                    <h3>{t("Reviewed next steps")}</h3>
+                    <ol>
+                      {message.reply.recommendations.map((item, index) => (
+                        <li key={`${message.id}-recommendation-${index}`}>
+                          <span>{index + 1}</span>
+                          <div>
+                            <strong>{item.title}</strong>
+                            <p>{item.detail}</p>
+                            {item.actionId ? (
+                              <a href="#automation" onClick={onClose}>
+                                {t("Review dry-run action")}
+                              </a>
+                            ) : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ) : null}
+
+                {message.reply ? (
+                  <footer className="assistant-message__footer">
+                    <span>{t("Confidence")}</span>
+                    <strong className={`confidence confidence--${message.reply.confidence}`}>
+                      {label(message.reply.confidence)}
+                    </strong>
+                    <span>{t("Human review required")}</span>
+                  </footer>
+                ) : null}
+
+                {message.reply?.followUpPrompts.length ? (
+                  <div className="assistant-followups" aria-label={t("Follow-up questions")}>
+                    {message.reply.followUpPrompts.map((prompt) => (
+                      <button type="button" key={prompt} disabled={loading} onClick={() => void onSend(prompt)}>
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            ),
+          )}
+
+          {loading ? (
+            <div className="assistant-thinking" role="status">
+              <Sparkles size={17} aria-hidden="true" />
+              <span>{t("Analyzing verified evidence...")}</span>
+            </div>
+          ) : null}
+          {error ? <div className="assistant-error" role="alert">{error}</div> : null}
+        </div>
+
+        <form className="assistant-composer" onSubmit={submit}>
+          <label>
+            <span className="sr-only">{t("Ask AI analyst")}</span>
+            <textarea
+              ref={inputRef}
+              rows={2}
+              maxLength={1600}
+              value={input}
+              placeholder={t("Ask about the current security context")}
+              disabled={loading}
+              onChange={(event) => onInputChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void onSend();
+                }
+              }}
+            />
+          </label>
+          <button
+            className="assistant-send"
+            type="submit"
+            aria-label={t("Send question")}
+            title={t("Send question")}
+            disabled={loading || input.trim().length === 0}
+          >
+            <Send size={18} aria-hidden="true" />
+          </button>
+        </form>
+      </aside>
     </div>
   );
 }
@@ -2165,6 +2604,158 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 function Icon({ name }: { name: IconName }) {
   const Component = ICON_COMPONENTS[name] ?? Gauge;
   return <Component aria-hidden="true" size={18} strokeWidth={1.8} />;
+}
+
+let assistantMessageSequence = 0;
+
+function createAssistantMessageId(role: "user" | "assistant") {
+  assistantMessageSequence += 1;
+  return `${role}-${Date.now()}-${assistantMessageSequence}`;
+}
+
+function createAssistantContext(
+  kind: AssistantContextKind,
+  dashboard: DashboardData,
+  finding: Finding | undefined,
+  event: AuditEvent | undefined,
+  localizedLabel: (value: string) => string,
+): AssistantContext {
+  if (kind === "finding") {
+    return {
+      kind,
+      id: finding?.id,
+      title: finding ? localizedLabel(finding.type) : "Finding",
+      severity: finding?.severity,
+      riskScore: finding?.riskScore,
+      source: finding?.source,
+      resource: finding?.secretPath,
+      status: finding?.status,
+      observedAt: finding?.eventTime,
+      details: {
+        type: finding?.type,
+        sub_type: finding?.subType,
+        repository: finding?.repository,
+        line: finding?.line,
+      },
+    };
+  }
+
+  if (kind === "db_audit") {
+    return {
+      kind,
+      id: event?.id,
+      title: event ? localizedLabel(event.action || event.eventType) : "DB audit",
+      severity: event?.severity,
+      riskScore: event?.riskScore,
+      source: event?.sourceProduct,
+      resource: [event?.dbName, event?.tableName].filter(Boolean).join(" / "),
+      status: event?.result,
+      observedAt: event?.eventTime,
+      details: {
+        user: event?.user,
+        action: event?.action || event?.eventType,
+        database: event?.dbName,
+        table: event?.tableName,
+        result: event?.result,
+        credential_id: event?.credentialId,
+      },
+    };
+  }
+
+  return {
+    kind: "dashboard",
+    title: "Security posture",
+    severity: scoreSeverity(100 - dashboard.summary.security_score),
+    riskScore: 100 - dashboard.summary.security_score,
+    source: "Security Portal",
+    status: dashboard.summary.elastic_enabled ? "live" : "fallback",
+    details: {
+      security_score: dashboard.summary.security_score,
+      critical_findings: dashboard.summary.critical_findings,
+      data_risk: dashboard.summary.data_risk,
+      open_offenses: dashboard.summary.open_offenses,
+      application_risk: dashboard.appRiskSummary.score,
+      pending_approvals: dashboard.summary.pending_approvals,
+    },
+  };
+}
+
+async function postAssistantChat({
+  message,
+  locale,
+  context,
+  history,
+}: {
+  message: string;
+  locale: "en" | "ko";
+  context: AssistantContext;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+}): Promise<AssistantReply> {
+  const response = await fetch(`${API_BASE}/api/assistant/chat`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      locale,
+      context: {
+        kind: context.kind,
+        id: context.id,
+        title: context.title,
+        severity: context.severity,
+        risk_score: context.riskScore,
+        source: context.source,
+        resource: context.resource,
+        status: context.status,
+        observed_at: context.observedAt,
+        details: context.details,
+      },
+      history,
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = isRecord(body) ? asText(body.detail) : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail || `${response.status} ${response.statusText}`);
+  }
+
+  return normalizeAssistantReply(await response.json());
+}
+
+function normalizeAssistantReply(value: unknown): AssistantReply {
+  const source = isRecord(value) ? value : {};
+  const provider = asText(source.provider) === "amazon-bedrock" ? "amazon-bedrock" : "evidence-engine";
+  const confidenceValue = asText(source.confidence, "low");
+  const confidence = ["low", "medium", "high"].includes(confidenceValue)
+    ? (confidenceValue as AssistantReply["confidence"])
+    : "low";
+  return {
+    messageId: asText(source.message_id, createAssistantMessageId("assistant")),
+    answer: asText(source.answer),
+    provider,
+    model: asText(source.model) || undefined,
+    confidence,
+    evidence: asArray(source.evidence).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      return [{ label: asText(item.label), value: asText(item.value), source: asText(item.source) }];
+    }),
+    recommendations: asArray(source.recommendations).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      return [{
+        title: asText(item.title),
+        detail: asText(item.detail),
+        actionId: asText(item.action_id) || undefined,
+      }];
+    }),
+    followUpPrompts: asArray(source.follow_up_prompts).map((item) => asText(item)).filter(Boolean),
+    humanReviewRequired: source.human_review_required !== false,
+    notice: asText(source.notice) || undefined,
+  };
 }
 
 async function fetchJson(path: string, signal: AbortSignal): Promise<unknown> {

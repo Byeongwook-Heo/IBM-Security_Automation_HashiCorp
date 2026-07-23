@@ -1,6 +1,6 @@
 # Lab Deployment Status
 
-Last updated: 2026-07-14
+Last updated: 2026-07-23
 
 ## Verification Boundary
 
@@ -35,6 +35,9 @@ metadata. StackStorm remains disabled and review-only by design.
 ## Verified
 
 - Security portal health returns `{"status":"ok","mode":"mock+elastic"}`.
+- Security portal navigation uses independent hash-routed workspaces rather
+  than scrolling to sections on one long page. The deployed overview and data
+  security routes were verified at `#/overview` and `#/data-security`.
 - Filebeat is publishing portal logs through its dedicated API key, and the
   portal returns current Filebeat, Vault audit, and DB audit events.
 - Portal summary reads Elastic data streams.
@@ -83,6 +86,30 @@ metadata. StackStorm remains disabled and review-only by design.
   `ibm-hc-lab-tfstate-063455554839-ap-northeast-2` at
   `security-automation/lab/terraform.tfstate`. Remote state matched the local
   migration snapshot and the post-migration plan returned no changes.
+
+## Portal UI Deployment QA (2026-07-23)
+
+- The redesigned operations workspace was deployed to the existing Elastic
+  SIEM host `i-09c656a6f462df4f2`; no EC2 instance was created.
+- The host remains on the approved
+  `hc-security-base-ubuntu-2204-20260629151937` AMI and SSM reported `Online`.
+- The production portal serves the new routed frontend assets and `/health`
+  returns HTTP 200 with `mock+elastic` mode.
+- Desktop QA at `1440x1000` and mobile QA at `390x844` found no document
+  overflow, incoherent overlap, or browser console warnings/errors.
+- Korean/English switching, light/dark themes, responsive navigation, Data
+  Security routing, AI evidence responses, and review-only automation were
+  exercised through the UI.
+- The backend uses `trusted_headers` behind Nginx for the two approved UI
+  mutation routes only: `/api/assistant/chat` and
+  `/api/workflows/actions/dry-run`. Generic API proxy routes continue to clear
+  identity headers.
+- Production AI verification returned the local `evidence-engine` response
+  with human review required. Production automation verification returned
+  `planned` with `execution_blocked=true`.
+- Full regression validation passed: 123 Python tests, 6 frontend tests,
+  TypeScript production build, deployment script syntax, Git diff checks, and
+  a Trivy secret scan with 0 findings.
 
 ## Operational Scripts
 

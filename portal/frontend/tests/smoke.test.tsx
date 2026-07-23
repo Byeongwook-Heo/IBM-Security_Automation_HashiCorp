@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { App } from "../src/main";
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "#/overview");
   const values = new Map<string, string>();
   const storage: Storage = {
     get length() {
@@ -27,6 +28,7 @@ afterEach(() => {
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.removeAttribute("style");
   document.documentElement.lang = "en";
+  window.history.replaceState(null, "", "#/overview");
 });
 
 function jsonResponse(body: unknown, status = 200) {
@@ -105,6 +107,9 @@ describe("security portal", () => {
       "href",
       "https://kibana.example.test",
     );
+
+    fireEvent.click(screen.getByRole("link", { name: "Observability" }));
+    expect(window.location.hash).toBe("#/observability");
     expect(screen.getByText("Navigation only. Link availability does not indicate service health or telemetry freshness.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Grafana" })).toHaveAttribute(
       "href",
@@ -118,6 +123,8 @@ describe("security portal", () => {
     expect(screen.getByRole("link", { name: "Open Prometheus" })).toBeInTheDocument();
     expect(screen.getAllByText("Not configured")).toHaveLength(2);
 
+    fireEvent.click(screen.getByRole("link", { name: /^Automation/ }));
+    expect(window.location.hash).toBe("#/automation");
     const dryRunButtons = screen.getAllByRole("button", { name: "Dry run" });
     fireEvent.click(dryRunButtons[0]);
 
@@ -165,6 +172,9 @@ describe("security portal", () => {
 
     expect(await screen.findByText("Security score")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Kibana" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "Cloud Optimization" }));
+    expect(window.location.hash).toBe("#/cloud-optimization");
     expect(screen.getByText("No live optimization recommendations")).toBeInTheDocument();
     expect(screen.queryByText("deployment/payments-api")).not.toBeInTheDocument();
   });
@@ -208,6 +218,8 @@ describe("security portal", () => {
 
     render(<App />);
 
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Observability" }));
     expect(await screen.findByText("Console navigation")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open Grafana" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open Loki" })).not.toBeInTheDocument();
@@ -314,6 +326,8 @@ describe("security portal", () => {
     render(<App />);
 
     expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: /^Investigations/ }));
+    expect(window.location.hash).toBe("#/investigations");
     fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
 
     const dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
@@ -323,7 +337,7 @@ describe("security portal", () => {
     expect(await within(dialog).findByText("The selected signal is critical and requires ownership validation.")).toBeInTheDocument();
     expect(within(dialog).getByText("95/100")).toBeInTheDocument();
     expect(within(dialog).getByText("Review a Vault onboarding plan")).toBeInTheDocument();
-    expect(within(dialog).getByRole("link", { name: "Review dry-run action" })).toHaveAttribute("href", "#automation");
+    expect(within(dialog).getByRole("link", { name: "Review dry-run action" })).toHaveAttribute("href", "#/automation");
     expect(assistantRequest).toMatchObject({
       locale: "en",
       context: { kind: "finding", risk_score: 95 },
@@ -333,5 +347,48 @@ describe("security portal", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Close AI analyst" }));
     expect(screen.queryByRole("dialog", { name: "AI Security Analyst" })).not.toBeInTheDocument();
+  });
+
+  it("switches between independent portal views without rendering a long anchor page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 80, elastic_enabled: false });
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") {
+          return jsonResponse({});
+        }
+        return jsonResponse([]);
+      }),
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Priority investigation queue" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Data Security" }));
+
+    expect(window.location.hash).toBe("#/data-security");
+    expect(await screen.findByRole("heading", { name: "Data Security" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "DB Audit Activity" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Priority investigation queue" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Data Security" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 });

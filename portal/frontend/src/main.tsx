@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState, type FormEvent } from "rea
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  ArrowRight,
   Bot,
+  CircleAlert,
   Database,
   ExternalLink,
   FileBadge2,
@@ -15,6 +17,7 @@ import {
   Network,
   Package,
   Radar,
+  RefreshCw,
   Search,
   Send,
   ShieldCheck,
@@ -348,6 +351,17 @@ type LoadState =
       message: { key: string; params?: Record<string, string | number> } | null;
     };
 
+type PortalView =
+  | "overview"
+  | "investigations"
+  | "data-security"
+  | "application-risk"
+  | "automation"
+  | "observability"
+  | "cloud-optimization"
+  | "system-health"
+  | "runbooks";
+
 type IconName =
   | "gauge"
   | "radar"
@@ -363,6 +377,72 @@ type IconName =
   | "package"
   | "certificate"
   | "cluster";
+
+type PortalViewMeta = {
+  title: string;
+  subtitle: string;
+  icon: IconName;
+  group: "operations" | "platform";
+};
+
+const PORTAL_VIEW_META: Record<PortalView, PortalViewMeta> = {
+  overview: {
+    title: "Security Overview",
+    subtitle: "Real-time posture, prioritized risks, and telemetry health",
+    icon: "gauge",
+    group: "operations",
+  },
+  investigations: {
+    title: "Investigations",
+    subtitle: "Triage findings, correlate evidence, and assign next steps",
+    icon: "radar",
+    group: "operations",
+  },
+  "data-security": {
+    title: "Data Security",
+    subtitle: "Secret exposure, database activity, and credential lineage",
+    icon: "database",
+    group: "operations",
+  },
+  "application-risk": {
+    title: "Application Risk",
+    subtitle: "CVE, code, SBOM, and certificate risk by application",
+    icon: "package",
+    group: "operations",
+  },
+  automation: {
+    title: "Automation",
+    subtitle: "Review-only response plans across Argo and StackStorm",
+    icon: "workflow",
+    group: "operations",
+  },
+  observability: {
+    title: "Observability",
+    subtitle: "Service reachability, collection coverage, logs, and traces",
+    icon: "activity",
+    group: "platform",
+  },
+  "cloud-optimization": {
+    title: "Cloud Optimization",
+    subtitle: "Kubernetes cost, capacity, and rightsizing recommendations",
+    icon: "cluster",
+    group: "platform",
+  },
+  "system-health": {
+    title: "System Health",
+    subtitle: "Elastic streams, API sources, and enterprise service readiness",
+    icon: "stream",
+    group: "platform",
+  },
+  runbooks: {
+    title: "Runbooks",
+    subtitle: "Operator procedures for investigation, recovery, and verification",
+    icon: "shield",
+    group: "platform",
+  },
+};
+
+const PORTAL_VIEWS = Object.keys(PORTAL_VIEW_META) as PortalView[];
 
 const ICON_COMPONENTS: Record<IconName, LucideIcon> = {
   gauge: LayoutDashboard,
@@ -872,6 +952,9 @@ function PortalApp() {
     data: null,
     message: null,
   });
+  const [activeView, setActiveView] = useState<PortalView>(() =>
+    portalViewFromHash(window.location.hash),
+  );
   const [findingSearch, setFindingSearch] = useState("");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -893,6 +976,17 @@ function PortalApp() {
   useEffect(() => {
     document.title = t("Information Security Portal");
   }, [locale, t]);
+
+  useEffect(() => {
+    const syncViewFromLocation = () => setActiveView(portalViewFromHash(window.location.hash));
+    window.addEventListener("hashchange", syncViewFromLocation);
+    return () => window.removeEventListener("hashchange", syncViewFromLocation);
+  }, []);
+
+  useEffect(() => {
+    const workspace = document.querySelector<HTMLElement>(".workspace");
+    if (workspace) workspace.scrollTop = 0;
+  }, [activeView]);
 
   useEffect(() => {
     let isActive = true;
@@ -1003,6 +1097,22 @@ function PortalApp() {
       selectedFinding,
     ],
   );
+  const pageMeta = PORTAL_VIEW_META[activeView];
+
+  function handleViewChange(view: PortalView) {
+    setActiveView(view);
+    const nextHash = `#/${view}`;
+    if (window.location.hash !== nextHash) window.location.hash = `/${view}`;
+
+    const nextAssistantContext =
+      view === "overview" ? "dashboard" : view === "data-security" ? "db_audit" : "finding";
+    if (nextAssistantContext !== assistantContextKind) {
+      setAssistantContextKind(nextAssistantContext);
+      setAssistantMessages([]);
+      setAssistantError("");
+      setAssistantInput("");
+    }
+  }
 
   function defaultTargetIdForAction(action: DryRunAction): string {
     if (action.targetType === "vault-radar-finding") {
@@ -1088,7 +1198,14 @@ function PortalApp() {
 
   if (loadState.status === "loading") {
     return (
-      <Shell dashboard={dashboard} kibanaHref="#stream-health" assistantEnabled={false}>
+      <Shell
+        dashboard={dashboard}
+        kibanaHref=""
+        activeView={activeView}
+        pageMeta={pageMeta}
+        assistantEnabled={false}
+        onNavigate={handleViewChange}
+      >
         <section className="state-panel" aria-live="polite">
           <div className="spinner" aria-hidden="true" />
           <h1>{t("Loading telemetry")}</h1>
@@ -1103,8 +1220,11 @@ function PortalApp() {
     <Shell
       dashboard={dashboard}
       kibanaHref={kibanaHref}
+      activeView={activeView}
+      pageMeta={pageMeta}
       assistantOpen={assistantOpen}
       assistantEnabled
+      onNavigate={handleViewChange}
       onAssistantToggle={() => setAssistantOpen((current) => !current)}
     >
       {loadState.message ? (
@@ -1117,224 +1237,186 @@ function PortalApp() {
         </div>
       ) : null}
 
-      <section className="summary-grid" aria-label={t("Security summary")}>
-        <RiskCard
-          icon="shield"
-          label={t("Security score")}
-          value={`${dashboard.summary.security_score}`}
-          trend={t("Risk posture")}
-          severity={scoreSeverity(100 - dashboard.summary.security_score)}
-          variant="score"
-        />
-        <RiskCard
-          icon="radar"
-          label={t("Critical findings")}
-          value={`${dashboard.summary.critical_findings}`}
-          trend={t("{count} exposed secrets", { count: dashboard.summary.exposed_secrets })}
-          severity="critical"
-        />
-        <RiskCard
-          icon="database"
-          label={t("Data risk")}
-          value={`${dashboard.summary.data_risk}`}
-          trend={t("{count} DB audit events", {
-            count: dashboard.summary.db_audit_events ?? dashboard.dbEvents.length,
-          })}
-          severity={scoreSeverity(dashboard.summary.data_risk)}
-        />
-        <RiskCard
-          icon="activity"
-          label={t("Open offenses")}
-          value={`${dashboard.summary.open_offenses}`}
-          trend={t("{count} pending approvals", { count: dashboard.summary.pending_approvals })}
-          severity={dashboard.summary.open_offenses > 0 ? "high" : "low"}
-        />
-        <RiskCard
-          icon="package"
-          label={t("Application risk")}
-          value={`${dashboard.appRiskSummary.score}`}
-          trend={t("{count} scanner signals", { count: dashboard.appRiskSummary.signalCount })}
-          severity={dashboard.appRiskSummary.scoreBand}
-        />
-      </section>
-
-      <section className="investigation-panel" id="vault" aria-labelledby="investigation-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="investigation-title">{t("Secret -> Vault Credential -> DB Audit")}</h2>
-            <p>{t("Case timeline")}</p>
-          </div>
-          <span className="compact-meta">
-            {t("{count} linked events", { count: dashboard.investigation.length })}
-          </span>
-        </div>
-        <InvestigationTimeline steps={dashboard.investigation} />
-      </section>
-
-      <div className="work-grid" id="data-security">
-        <section className="data-panel" id="vault-radar-findings" aria-labelledby="findings-title">
-          <div className="section-heading section-heading--controls">
-            <div>
-              <h2 id="findings-title">{t("Vault Radar findings")}</h2>
-              <p>{t("{count} visible findings", { count: filteredFindings.length })}</p>
-            </div>
-            <div className="control-row" role="search">
-              <SearchBox
-                label={t("Search findings")}
-                value={findingSearch}
-                onChange={setFindingSearch}
-              />
-              <FilterSelect
-                label={t("Severity")}
-                value={severityFilter}
-                options={severityOptions}
-                onChange={setSeverityFilter}
-              />
-              <FilterSelect
-                label={t("Source")}
-                value={sourceFilter}
-                options={sourceOptions}
-                onChange={setSourceFilter}
-              />
-            </div>
-          </div>
-          <FindingsTable
-            findings={filteredFindings}
-            selectedId={selectedFinding?.id ?? ""}
-            onSelect={setSelectedFindingId}
+      <div className="view-stack" data-view={activeView}>
+        {activeView === "overview" ? (
+          <OverviewPage
+            dashboard={dashboard}
+            selectedFinding={selectedFinding}
+            onOpenFinding={(findingId) => {
+              setSelectedFindingId(findingId);
+              handleViewChange("investigations");
+            }}
+            onOpenAudit={(eventId) => {
+              setSelectedAuditId(eventId);
+              handleViewChange("data-security");
+            }}
+            onNavigate={handleViewChange}
           />
-        </section>
+        ) : null}
 
-        <SelectionPanel finding={selectedFinding} event={selectedAuditEvent} />
+        {activeView === "investigations" ? (
+          <>
+            <section className="investigation-panel" aria-labelledby="investigation-title">
+              <div className="section-heading">
+                <div>
+                  <h2 id="investigation-title">{t("Credential lineage")}</h2>
+                  <p>{t("Secret -> Vault Credential -> DB Audit")}</p>
+                </div>
+                <span className="compact-meta">
+                  {t("{count} linked events", { count: dashboard.investigation.length })}
+                </span>
+              </div>
+              <InvestigationTimeline steps={dashboard.investigation} />
+            </section>
+            <div className="work-grid">
+              <section className="data-panel" aria-labelledby="findings-title">
+                <div className="section-heading section-heading--controls">
+                  <div>
+                    <h2 id="findings-title">{t("Vault Radar findings")}</h2>
+                    <p>{t("{count} visible findings", { count: filteredFindings.length })}</p>
+                  </div>
+                  <div className="control-row" role="search">
+                    <SearchBox label={t("Search findings")} value={findingSearch} onChange={setFindingSearch} />
+                    <FilterSelect label={t("Severity")} value={severityFilter} options={severityOptions} onChange={setSeverityFilter} />
+                    <FilterSelect label={t("Source")} value={sourceFilter} options={sourceOptions} onChange={setSourceFilter} />
+                  </div>
+                </div>
+                <FindingsTable
+                  findings={filteredFindings}
+                  selectedId={selectedFinding?.id ?? ""}
+                  onSelect={setSelectedFindingId}
+                />
+              </section>
+              <SelectionPanel finding={selectedFinding} event={selectedAuditEvent} />
+            </div>
+          </>
+        ) : null}
 
-        <section className="data-panel data-panel--wide" id="audit" aria-labelledby="db-audit-title">
-          <div className="section-heading section-heading--controls">
-            <div>
-              <h2 id="db-audit-title">{t("DB Audit Activity")}</h2>
-              <p>{t("{count} visible pgAudit rows", { count: filteredDbEvents.length })}</p>
+        {activeView === "data-security" ? (
+          <>
+            <section className="summary-grid summary-grid--data" aria-label={t("Data security posture")}>
+              <RiskCard icon="radar" label={t("Exposed secrets")} value={`${dashboard.summary.exposed_secrets}`} trend={t("Vault Radar findings")} severity="critical" />
+              <RiskCard icon="database" label={t("Critical DB events")} value={`${dashboard.dbEvents.filter((event) => event.severity === "critical").length}`} trend={t("{count} visible pgAudit rows", { count: filteredDbEvents.length })} severity="high" />
+              <RiskCard icon="key" label={t("Dynamic credentials")} value={`${dashboard.vaultEvents.filter((event) => Boolean(event.credentialId)).length}`} trend="Vault" severity="low" />
+              <RiskCard icon="activity" label={t("Data risk")} value={`${dashboard.summary.data_risk}`} trend={t("Risk posture")} severity={scoreSeverity(dashboard.summary.data_risk)} />
+            </section>
+            <section className="investigation-panel investigation-panel--ribbon" aria-labelledby="lineage-title">
+              <div className="section-heading">
+                <div>
+                  <h2 id="lineage-title">{t("Credential lineage")}</h2>
+                  <p>{t("Secret -> Vault Credential -> DB Audit")}</p>
+                </div>
+                <span className="compact-meta">{t("Correlated evidence")}</span>
+              </div>
+              <InvestigationTimeline steps={dashboard.investigation} />
+            </section>
+            <div className="work-grid">
+              <section className="data-panel" aria-labelledby="db-audit-title">
+                <div className="section-heading section-heading--controls">
+                  <div>
+                    <h2 id="db-audit-title">{t("DB Audit Activity")}</h2>
+                    <p>{t("{count} visible pgAudit rows", { count: filteredDbEvents.length })}</p>
+                  </div>
+                  <div className="control-row" role="search">
+                    <SearchBox label={t("Search DB audit")} value={auditSearch} onChange={setAuditSearch} />
+                    <FilterSelect label={t("Source")} value={auditSourceFilter} options={auditSourceOptions} onChange={setAuditSourceFilter} />
+                  </div>
+                </div>
+                <DbAuditTable events={filteredDbEvents} selectedId={selectedAuditEvent?.id ?? ""} onSelect={setSelectedAuditId} />
+              </section>
+              <SelectionPanel finding={selectedFinding} event={selectedAuditEvent} />
             </div>
-            <div className="control-row" role="search">
-              <SearchBox label={t("Search DB audit")} value={auditSearch} onChange={setAuditSearch} />
-              <FilterSelect
-                label={t("Source")}
-                value={auditSourceFilter}
-                options={auditSourceOptions}
-                onChange={setAuditSourceFilter}
-              />
+            <section className="vault-radar-sources-panel" aria-labelledby="vault-radar-sources-title">
+              <div className="section-heading">
+                <div>
+                  <h2 id="vault-radar-sources-title">{t("Vault Radar Scan Sources")}</h2>
+                  <p>{t("Git, TFE, S3, AWS Parameter Store, and EC2/EKS inventory targets")}</p>
+                </div>
+                <span className="compact-meta">{t("{count} sources", { count: dashboard.vaultRadarSources.length })}</span>
+              </div>
+              <VaultRadarSourcesPanel sources={dashboard.vaultRadarSources} />
+            </section>
+          </>
+        ) : null}
+
+        {activeView === "application-risk" ? (
+          <section className="risk-signals-panel" aria-labelledby="application-risk-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="application-risk-title">{t("Application Risk Score")}</h2>
+                <p>{t("Trivy, Semgrep, Syft, and Vault PKI signals")}</p>
+              </div>
+              <span className={`severity-pill severity-pill--${dashboard.appRiskSummary.scoreBand}`}>
+                {dashboard.appRiskSummary.score} / 100
+              </span>
             </div>
-          </div>
-          <DbAuditTable
-            events={filteredDbEvents}
-            selectedId={selectedAuditEvent?.id ?? ""}
-            onSelect={setSelectedAuditId}
-          />
-        </section>
+            <ApplicationRiskPanel summary={dashboard.appRiskSummary} signals={dashboard.riskSignals} />
+          </section>
+        ) : null}
+
+        {activeView === "automation" ? (
+          <section className="automation-panel" aria-labelledby="automation-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="automation-title">{t("Dry-run Automation")}</h2>
+                <p>{t("Argo Workflows/Events and StackStorm review actions")}</p>
+              </div>
+              <span className="compact-meta">{t("{count} actions", { count: dashboard.dryRunActions.length })}</span>
+            </div>
+            <AutomationPanel
+              actions={dashboard.dryRunActions}
+              selectedActionId={selectedAction?.id ?? ""}
+              isRunning={isRunningDryRun}
+              result={dryRunResult}
+              error={dryRunError}
+              onRun={handleDryRun}
+            />
+          </section>
+        ) : null}
+
+        {activeView === "observability" ? (
+          <section className="observability-panel" aria-labelledby="observability-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="observability-title">{t("Observability Targets")}</h2>
+                <p>{t("Collection signals and console navigation for the lab services")}</p>
+              </div>
+              <span className="compact-meta">{localizedLabel(dashboard.kubernetesPlatform.mode)}</span>
+            </div>
+            <ObservabilityPanel targets={dashboard.observabilityTargets} links={dashboard.observabilityLinks} platform={dashboard.kubernetesPlatform} />
+          </section>
+        ) : null}
+
+        {activeView === "cloud-optimization" ? (
+          <section className="optimization-panel" aria-labelledby="optimization-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="optimization-title">{t("Kubernetes Optimization")}</h2>
+                <p>{t("OpenCost, KRR, Goldilocks, VPA/HPA, Karpenter, and KEDA signals")}</p>
+              </div>
+              <span className="compact-meta">
+                {t("{amount} potential savings", { amount: localizedMoney(dashboard.kubernetesCostSummary.potentialMonthlySavings) })}
+              </span>
+            </div>
+            <KubernetesOptimizationPanel
+              summary={dashboard.kubernetesCostSummary}
+              recommendations={dashboard.optimizationRecommendations}
+              onRunRecommendation={(recommendation) => {
+                const action = dashboard.dryRunActions.find((item) => item.id === recommendation.actionId);
+                if (action) {
+                  void handleDryRun(action, {
+                    targetId: recommendation.id,
+                    reason: `kubernetes optimization review: ${recommendation.id}`,
+                  });
+                }
+              }}
+            />
+          </section>
+        ) : null}
+
+        {activeView === "system-health" ? <SystemHealthPage dashboard={dashboard} /> : null}
+        {activeView === "runbooks" ? <RunbooksPage onNavigate={handleViewChange} /> : null}
       </div>
-
-      <section className="vault-radar-sources-panel" id="vault-radar-sources" aria-labelledby="vault-radar-sources-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="vault-radar-sources-title">{t("Vault Radar Scan Sources")}</h2>
-            <p>{t("Git, TFE, S3, AWS Parameter Store, and EC2/EKS inventory targets")}</p>
-          </div>
-          <span className="compact-meta">
-            {t("{count} sources", { count: dashboard.vaultRadarSources.length })}
-          </span>
-        </div>
-        <VaultRadarSourcesPanel sources={dashboard.vaultRadarSources} />
-      </section>
-
-      <section className="risk-signals-panel" id="application-risk" aria-labelledby="application-risk-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="application-risk-title">{t("Application Risk Score")}</h2>
-            <p>{t("Trivy, Semgrep, Syft, and Vault PKI signals")}</p>
-          </div>
-          <span className={`severity-pill severity-pill--${dashboard.appRiskSummary.scoreBand}`}>
-            {dashboard.appRiskSummary.score} / 100
-          </span>
-        </div>
-        <ApplicationRiskPanel summary={dashboard.appRiskSummary} signals={dashboard.riskSignals} />
-      </section>
-
-      <section className="automation-panel" id="automation" aria-labelledby="automation-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="automation-title">{t("Dry-run Automation")}</h2>
-            <p>{t("Argo Workflows/Events and StackStorm review actions")}</p>
-          </div>
-          <span className="compact-meta">
-            {t("{count} actions", { count: dashboard.dryRunActions.length })}
-          </span>
-        </div>
-        <AutomationPanel
-          actions={dashboard.dryRunActions}
-          selectedActionId={selectedAction?.id ?? ""}
-          isRunning={isRunningDryRun}
-          result={dryRunResult}
-          error={dryRunError}
-          onRun={handleDryRun}
-        />
-      </section>
-
-      <section className="observability-panel" id="observability" aria-labelledby="observability-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="observability-title">{t("Observability Targets")}</h2>
-            <p>{t("Collection signals and console navigation for the lab services")}</p>
-          </div>
-          <span className="compact-meta">{localizedLabel(dashboard.kubernetesPlatform.mode)}</span>
-        </div>
-        <ObservabilityPanel
-          targets={dashboard.observabilityTargets}
-          links={dashboard.observabilityLinks}
-          platform={dashboard.kubernetesPlatform}
-        />
-      </section>
-
-      <section className="optimization-panel" id="kubernetes-optimization" aria-labelledby="optimization-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="optimization-title">{t("Kubernetes Optimization")}</h2>
-            <p>{t("OpenCost, KRR, Goldilocks, VPA/HPA, Karpenter, and KEDA signals")}</p>
-          </div>
-          <span className="compact-meta">
-            {t("{amount} potential savings", {
-              amount: localizedMoney(dashboard.kubernetesCostSummary.potentialMonthlySavings),
-            })}
-          </span>
-        </div>
-        <KubernetesOptimizationPanel
-          summary={dashboard.kubernetesCostSummary}
-          recommendations={dashboard.optimizationRecommendations}
-          onRunRecommendation={(recommendation) => {
-            const action = dashboard.dryRunActions.find((item) => item.id === recommendation.actionId);
-            if (action) {
-              void handleDryRun(action, {
-                targetId: recommendation.id,
-                reason: `kubernetes optimization review: ${recommendation.id}`,
-              });
-            }
-          }}
-        />
-      </section>
-
-      <section className="stream-panel" id="stream-health" aria-labelledby="stream-health-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="stream-health-title">{t("Elastic Data Stream Health")}</h2>
-            <p>{t(dashboard.summary.elastic_enabled ? "Elastic enabled" : "Mock-compatible mode")}</p>
-          </div>
-          <span className="compact-meta">
-            {t("{count} indexed events", { count: dashboard.summary.elastic_events ?? 0 })}
-          </span>
-        </div>
-        <div className="stream-grid">
-          {dashboard.streamHealth.map((stream) => (
-            <StreamHealthRow key={stream.name} stream={stream} />
-          ))}
-        </div>
-      </section>
     </Shell>
     <AssistantPanel
       open={assistantOpen}
@@ -1360,15 +1442,21 @@ function PortalApp() {
 function Shell({
   dashboard,
   kibanaHref,
+  activeView,
+  pageMeta,
   assistantOpen = false,
   assistantEnabled = true,
+  onNavigate,
   onAssistantToggle,
   children,
 }: {
   dashboard: DashboardData;
   kibanaHref: string;
+  activeView: PortalView;
+  pageMeta: PortalViewMeta;
   assistantOpen?: boolean;
   assistantEnabled?: boolean;
+  onNavigate: (view: PortalView) => void;
   onAssistantToggle?: () => void;
   children: React.ReactNode;
 }) {
@@ -1378,13 +1466,17 @@ function Shell({
     : dashboard.summary.elastic_enabled
       ? "healthy"
       : "mock";
-  const enterpriseEntries = Object.entries(dashboard.enterpriseStatus);
-  const configuredEnterprise = enterpriseEntries.filter(
-    ([, status]) => status.image_configured || status.license_configured,
-  ).length;
   const externalKibanaHref = externalHref(kibanaHref);
   const languageLabel = t(locale === "en" ? "Switch to Korean" : "Switch to English");
   const themeLabel = t(theme === "light" ? "Switch to dark mode" : "Switch to light mode");
+  const navCount = (view: PortalView) => {
+    if (view === "investigations") return dashboard.summary.critical_findings;
+    if (view === "automation") return dashboard.summary.pending_approvals;
+    if (view === "system-health") {
+      return dashboard.endpointStates.filter((endpoint) => endpoint.status === "error").length;
+    }
+    return 0;
+  };
 
   return (
     <div className="app-shell">
@@ -1399,71 +1491,66 @@ function Shell({
           </div>
         </div>
         <nav className="nav-list" aria-label={t("Primary")}>
-          <a href="#top" className="nav-item nav-item--active">
-            <Icon name="gauge" />
-            {t("Dashboard")}
-          </a>
-          <a href="#vault-radar-findings" className="nav-item">
-            <Icon name="radar" />
-            {t("Findings")}
-          </a>
-          <a href="#vault-radar-sources" className="nav-item">
-            <Icon name="shield" />
-            {t("Radar Sources")}
-          </a>
-          <a href="#audit" className="nav-item">
-            <Icon name="activity" />
-            {t("Audit")}
-          </a>
-          <a href="#data-security" className="nav-item">
-            <Icon name="database" />
-            {t("Data Security")}
-          </a>
-          <a href="#vault" className="nav-item">
-            <Icon name="key" />
-            Vault
-          </a>
-          <a href="#application-risk" className="nav-item">
-            <Icon name="package" />
-            {t("App Risk")}
-          </a>
-          <a href="#automation" className="nav-item">
-            <Icon name="workflow" />
-            {t("Automation")}
-          </a>
-          <a href="#observability" className="nav-item">
-            <Icon name="cluster" />
-            {t("Observability")}
-          </a>
-          <a href="#kubernetes-optimization" className="nav-item">
-            <Icon name="gauge" />
-            {t("Optimization")}
-          </a>
-          <a href="#stream-health" className="nav-item">
-            <Icon name="stream" />
-            Elastic
-          </a>
-          <a href="#runbooks" className="nav-item">
-            <Icon name="shield" />
-            {t("Runbooks")}
-          </a>
+          {(["operations", "platform"] as const).map((group) => (
+            <div className="nav-group" key={group}>
+              <span className="nav-group__label">
+                {t(group === "operations" ? "Security operations" : "Platform operations")}
+              </span>
+              {PORTAL_VIEWS.filter((view) => PORTAL_VIEW_META[view].group === group).map((view) => {
+                const meta = PORTAL_VIEW_META[view];
+                const count = navCount(view);
+                const active = view === activeView;
+                return (
+                  <a
+                    href={`#/${view}`}
+                    className={`nav-item${active ? " nav-item--active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                    key={view}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onNavigate(view);
+                    }}
+                  >
+                    <Icon name={meta.icon} />
+                    <span>{t(meta.title)}</span>
+                    {count > 0 ? <strong className="nav-item__count">{count}</strong> : null}
+                  </a>
+                );
+              })}
+            </div>
+          ))}
         </nav>
-        <div className="sidebar-status">
-          <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
-          <div>
-            <strong>{label(healthState)}</strong>
-            <span>{t("{count} API sources", { count: dashboard.endpointStates.length || ENDPOINTS.length })}</span>
+        <div className="sidebar-footer">
+          <div className="sidebar-context">
+            <span>{t("Environment")}</span>
+            <strong>LAB · ap-northeast-2</strong>
+          </div>
+          <div className="sidebar-status">
+            <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
+            <div>
+              <strong>{label(healthState)}</strong>
+              <span>{t("{count} API sources", { count: dashboard.endpointStates.length || ENDPOINTS.length })}</span>
+            </div>
           </div>
         </div>
       </aside>
 
-      <div className="workspace" id="top">
+      <div className="workspace">
         <header className="topbar">
           <div className="topbar-title">
-            <h1>{t("Risk Summary")}</h1>
-            <p>{t("Lab environment telemetry")}</p>
+            <h1>{t(pageMeta.title)}</h1>
+            <p>{t(pageMeta.subtitle)}</p>
           </div>
           <div className="topbar-actions">
+            <button
+              className="preference-button preference-button--theme"
+              type="button"
+              aria-label={t("Refresh telemetry")}
+              title={t("Refresh telemetry")}
+              onClick={() => window.location.reload()}
+            >
+              <RefreshCw size={16} aria-hidden="true" />
+            </button>
             <div className="preference-controls" role="group" aria-label={t("Display preferences")}>
               <button
                 className="preference-button preference-button--language"
@@ -1485,13 +1572,6 @@ function Shell({
                 {theme === "light" ? <Moon size={17} aria-hidden="true" /> : <Sun size={17} aria-hidden="true" />}
               </button>
             </div>
-            <span className="environment-chip">LAB</span>
-            <span className="environment-chip">
-              {t("{configured}/{total} enterprise", {
-                configured: configuredEnterprise,
-                total: Math.max(enterpriseEntries.length, 1),
-              })}
-            </span>
             <span className={`health-chip health-chip--${healthState}`}>
               <span className={`status-dot status-dot--${healthState}`} aria-hidden="true" />
               {label(healthState)}
@@ -1526,14 +1606,393 @@ function Shell({
           </div>
         </header>
         <main className="dashboard">{children}</main>
-        <footer className="runbook-anchor" id="runbooks" aria-label={t("Runbook shortcuts")}>
-          <strong>{t("Runbooks")}</strong>
-          <a href="#automation">{t("Automation")}</a>
-          <a href="#observability">{t("Observability")}</a>
-          <a href="#kubernetes-optimization">{t("Optimization")}</a>
-        </footer>
       </div>
     </div>
+  );
+}
+
+type PriorityQueueItem = {
+  id: string;
+  kind: "finding" | "db-audit" | "application-risk";
+  severity: string;
+  title: string;
+  asset: string;
+  source: string;
+  status: string;
+  riskScore: number;
+  eventTime: string;
+};
+
+function OverviewPage({
+  dashboard,
+  selectedFinding,
+  onOpenFinding,
+  onOpenAudit,
+  onNavigate,
+}: {
+  dashboard: DashboardData;
+  selectedFinding?: Finding;
+  onOpenFinding: (findingId: string) => void;
+  onOpenAudit: (eventId: string) => void;
+  onNavigate: (view: PortalView) => void;
+}) {
+  const { t, label } = usePreferences();
+  const findingsRisk =
+    dashboard.findings.length > 0
+      ? Math.round(
+          dashboard.findings.reduce((total, finding) => total + finding.riskScore, 0) /
+            dashboard.findings.length,
+        )
+      : 0;
+  const dbRisk = dashboard.dbEvents.reduce((highest, event) => Math.max(highest, event.riskScore), 0);
+  const riskDimensions = [
+    { label: t("Data exposure"), value: dashboard.summary.data_risk, tone: "critical" },
+    { label: t("Finding pressure"), value: findingsRisk, tone: "high" },
+    { label: t("Database activity"), value: dbRisk, tone: "medium" },
+    { label: t("Application risk"), value: dashboard.appRiskSummary.score, tone: "application" },
+    { label: t("Cost risk"), value: dashboard.summary.cost_risk, tone: "low" },
+  ];
+  const queue: PriorityQueueItem[] = [
+    ...dashboard.findings.map((finding) => ({
+      id: finding.id,
+      kind: "finding" as const,
+      severity: finding.severity,
+      title: label(finding.type),
+      asset: finding.secretPath || t("Unknown path"),
+      source: finding.source || "Vault Radar",
+      status: finding.status,
+      riskScore: finding.riskScore,
+      eventTime: finding.eventTime,
+    })),
+    ...dashboard.dbEvents.map((event) => ({
+      id: event.id,
+      kind: "db-audit" as const,
+      severity: event.severity,
+      title: label(event.action || event.eventType),
+      asset: [event.dbName, event.tableName].filter(Boolean).join(" / ") || t("Unknown"),
+      source: event.sourceProduct || "PostgreSQL pgAudit",
+      status: event.result,
+      riskScore: event.riskScore,
+      eventTime: event.eventTime,
+    })),
+    ...dashboard.riskSignals.map((signal) => ({
+      id: signal.signalId,
+      kind: "application-risk" as const,
+      severity: signal.severity,
+      title: signal.findingTitle,
+      asset: signal.resourceName || signal.applicationName,
+      source: label(signal.sourceName),
+      status: signal.status,
+      riskScore: signal.riskScore,
+      eventTime: signal.observedAt,
+    })),
+  ]
+    .sort((left, right) => right.riskScore - left.riskScore)
+    .slice(0, 7);
+
+  function openQueueItem(item: PriorityQueueItem) {
+    if (item.kind === "finding") onOpenFinding(item.id);
+    else if (item.kind === "db-audit") onOpenAudit(item.id);
+    else onNavigate("application-risk");
+  }
+
+  return (
+    <>
+      <section className="summary-grid summary-grid--overview" aria-label={t("Security summary")}>
+        <RiskCard icon="shield" label={t("Security score")} value={`${dashboard.summary.security_score}`} trend={t("Risk posture")} severity={scoreSeverity(100 - dashboard.summary.security_score)} />
+        <RiskCard icon="radar" label={t("Critical findings")} value={`${dashboard.summary.critical_findings}`} trend={t("{count} exposed secrets", { count: dashboard.summary.exposed_secrets })} severity="critical" />
+        <RiskCard icon="database" label={t("Data risk")} value={`${dashboard.summary.data_risk}`} trend={t("{count} DB audit events", { count: dashboard.summary.db_audit_events ?? dashboard.dbEvents.length })} severity={scoreSeverity(dashboard.summary.data_risk)} />
+        <RiskCard icon="activity" label={t("Open investigations")} value={`${dashboard.summary.open_offenses}`} trend={t("{count} linked events", { count: dashboard.investigation.length })} severity={dashboard.summary.open_offenses > 0 ? "high" : "low"} />
+        <RiskCard icon="workflow" label={t("Pending approvals")} value={`${dashboard.summary.pending_approvals}`} trend={t("Review-only actions")} severity={dashboard.summary.pending_approvals > 0 ? "medium" : "low"} />
+      </section>
+
+      <div className="overview-layout">
+        <div className="overview-layout__main">
+          <section className="operations-panel risk-profile-panel" aria-labelledby="risk-profile-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="risk-profile-title">{t("Current risk profile")}</h2>
+                <p>{t("Normalized from current portal signals, not historical estimates")}</p>
+              </div>
+              <span className="compact-meta">{t("Current snapshot")}</span>
+            </div>
+            <div className="risk-profile" role="img" aria-label={t("Current risk profile")}>
+              {riskDimensions.map((dimension) => (
+                <div className="risk-profile__row" key={dimension.label}>
+                  <span>{dimension.label}</span>
+                  <div className="risk-profile__track">
+                    <i
+                      className={`risk-profile__fill risk-profile__fill--${dimension.tone}`}
+                      style={{ width: `${Math.max(0, Math.min(100, dimension.value))}%` }}
+                    />
+                  </div>
+                  <strong>{dimension.value}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="operations-panel priority-panel" aria-labelledby="priority-queue-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="priority-queue-title">{t("Priority investigation queue")}</h2>
+                <p>{t("Highest-risk current signals across secrets, data, and applications")}</p>
+              </div>
+              <button className="text-button text-button--standalone" type="button" onClick={() => onNavigate("investigations")}>
+                {t("View investigations")}
+                <ArrowRight size={15} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="table-wrap">
+              <table className="priority-table">
+                <caption>{t("Priority investigation queue")}</caption>
+                <thead>
+                  <tr>
+                    <th>{t("Severity")}</th>
+                    <th>{t("Signal")}</th>
+                    <th>{t("Affected asset")}</th>
+                    <th>{t("Source")}</th>
+                    <th>{t("Risk")}</th>
+                    <th>{t("Seen")}</th>
+                    <th><span className="sr-only">{t("Open")}</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queue.map((item, index) => (
+                    <tr className={index === 0 ? "is-selected" : ""} key={`${item.kind}-${item.id}`}>
+                      <td><span className={`severity-pill severity-pill--${normalizeSeverity(item.severity)}`}>{label(item.severity)}</span></td>
+                      <td><strong>{item.title}</strong><small>{label(item.status)}</small></td>
+                      <td><code>{item.asset}</code></td>
+                      <td>{item.source}</td>
+                      <td><RiskMeter value={item.riskScore} /></td>
+                      <td>{formatTime(item.eventTime)}</td>
+                      <td>
+                        <button className="row-action" type="button" aria-label={t("Review {signal}", { signal: item.title })} onClick={() => openQueueItem(item)}>
+                          <ArrowRight size={15} aria-hidden="true" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside className="analyst-focus" aria-labelledby="analyst-focus-title">
+          <div className="section-heading">
+            <div>
+              <h2 id="analyst-focus-title">{t("Analyst focus")}</h2>
+              <p>{t("Active investigation")}</p>
+            </div>
+            {selectedFinding ? <span className={`severity-pill severity-pill--${selectedFinding.severity}`}>{selectedFinding.riskScore}</span> : null}
+          </div>
+          {selectedFinding ? (
+            <>
+              <div className="analyst-focus__summary">
+                <span>{selectedFinding.source}</span>
+                <h3>{label(selectedFinding.type)}</h3>
+                <code>{selectedFinding.secretPath}</code>
+                <dl>
+                  <div><dt>{t("Status")}</dt><dd>{label(selectedFinding.status)}</dd></div>
+                  <div><dt>{t("Category")}</dt><dd>{label(selectedFinding.subType)}</dd></div>
+                  <div><dt>{t("Seen")}</dt><dd>{formatTime(selectedFinding.eventTime)}</dd></div>
+                </dl>
+              </div>
+              <div className="focus-timeline">
+                <h3>{t("Evidence timeline")}</h3>
+                {dashboard.investigation.slice(0, 3).map((step, index) => (
+                  <div className="focus-timeline__step" key={step.id}>
+                    <span>{index + 1}</span>
+                    <div>
+                      <strong>{t(step.title)}</strong>
+                      <small>{step.source} · {formatTime(step.time)}</small>
+                      <p>{step.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="primary-command" type="button" onClick={() => onOpenFinding(selectedFinding.id)}>
+                <CircleAlert size={17} aria-hidden="true" />
+                {t("Open investigation")}
+              </button>
+            </>
+          ) : (
+            <EmptyState title={t("No finding selected")} detail={t("Live findings will appear here for analyst review.")} />
+          )}
+        </aside>
+      </div>
+
+      <TelemetryHealthTable dashboard={dashboard} />
+    </>
+  );
+}
+
+function TelemetryHealthTable({ dashboard }: { dashboard: DashboardData }) {
+  const { t, label } = usePreferences();
+  const rows = [
+    ...dashboard.streamHealth.map((stream) => ({
+      id: `stream-${stream.name}`,
+      name: stream.source,
+      pipeline: stream.name,
+      status: stream.status,
+      freshness: stream.freshness || t("No events"),
+      volume: stream.count,
+    })),
+    ...dashboard.endpointStates
+      .filter((endpoint) => !dashboard.streamHealth.some((stream) => stream.source === endpoint.label))
+      .map((endpoint) => ({
+        id: `endpoint-${endpoint.key}`,
+        name: endpoint.label,
+        pipeline: endpoint.path,
+        status: endpoint.status,
+        freshness: endpoint.status === "error" ? endpoint.error || t("Request failed") : t("Current response"),
+        volume: endpoint.count,
+      })),
+  ].slice(0, 9);
+
+  return (
+    <section className="operations-panel telemetry-panel" aria-labelledby="telemetry-health-title">
+      <div className="section-heading">
+        <div>
+          <h2 id="telemetry-health-title">{t("Telemetry health")}</h2>
+          <p>{t("Collection status, freshness, and current event volume")}</p>
+        </div>
+        <span className="compact-meta">{t("{count} API sources", { count: dashboard.endpointStates.length || ENDPOINTS.length })}</span>
+      </div>
+      <div className="table-wrap">
+        <table className="telemetry-table">
+          <caption>{t("Telemetry health")}</caption>
+          <thead>
+            <tr>
+              <th>{t("Source")}</th>
+              <th>{t("Pipeline")}</th>
+              <th>{t("Status")}</th>
+              <th>{t("Data freshness")}</th>
+              <th>{t("Current volume")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td><strong>{row.name}</strong></td>
+                <td><code>{row.pipeline}</code></td>
+                <td><span className={`health-text health-text--${row.status}`}><i />{label(row.status)}</span></td>
+                <td>{row.freshness}</td>
+                <td>{row.volume.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function SystemHealthPage({ dashboard }: { dashboard: DashboardData }) {
+  const { t, label } = usePreferences();
+  const healthyApis = dashboard.endpointStates.filter((endpoint) => endpoint.status === "ok").length;
+  const failedApis = dashboard.endpointStates.filter((endpoint) => endpoint.status === "error").length;
+  const enterpriseEntries = Object.entries(dashboard.enterpriseStatus);
+  const enterpriseConfigured = enterpriseEntries.filter(([, status]) => status.image_configured || status.license_configured).length;
+
+  return (
+    <>
+      <section className="summary-grid summary-grid--system" aria-label={t("System health summary")}>
+        <RiskCard icon="activity" label={t("Healthy API sources")} value={`${healthyApis}`} trend={t("{count} API sources", { count: dashboard.endpointStates.length || ENDPOINTS.length })} severity="low" />
+        <RiskCard icon="stream" label={t("Failed API sources")} value={`${failedApis}`} trend={failedApis > 0 ? t("Review collection errors") : t("No collection errors")} severity={failedApis > 0 ? "critical" : "low"} />
+        <RiskCard icon="database" label={t("Indexed events")} value={`${dashboard.summary.elastic_events ?? 0}`} trend={t(dashboard.summary.elastic_enabled ? "Elastic enabled" : "Mock-compatible mode")} severity={dashboard.summary.elastic_enabled ? "low" : "medium"} />
+        <RiskCard icon="shield" label={t("Enterprise ready")} value={`${enterpriseConfigured}/${Math.max(enterpriseEntries.length, 1)}`} trend={t("Image or license configured")} severity={enterpriseConfigured > 0 ? "low" : "medium"} />
+      </section>
+      <TelemetryHealthTable dashboard={dashboard} />
+      <div className="health-detail-grid">
+        <section className="operations-panel" aria-labelledby="api-source-status-title">
+          <div className="section-heading">
+            <div>
+              <h2 id="api-source-status-title">{t("API source status")}</h2>
+              <p>{t("Current backend response state by integration")}</p>
+            </div>
+          </div>
+          <div className="health-list">
+            {dashboard.endpointStates.map((endpoint) => (
+              <div className="health-list__row" key={endpoint.key}>
+                <span className={`status-dot status-dot--${endpoint.status === "error" ? "degraded" : endpoint.status === "ok" ? "healthy" : "mock"}`} aria-hidden="true" />
+                <div><strong>{endpoint.label}</strong><code>{endpoint.path}</code></div>
+                <span>{endpoint.status === "error" ? endpoint.error || t("Request failed") : t("{count} records", { count: endpoint.count })}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="operations-panel" aria-labelledby="enterprise-readiness-title">
+          <div className="section-heading">
+            <div>
+              <h2 id="enterprise-readiness-title">{t("Enterprise readiness")}</h2>
+              <p>{t("Image and license configuration without secret values")}</p>
+            </div>
+          </div>
+          <div className="health-list">
+            {enterpriseEntries.length > 0 ? enterpriseEntries.map(([name, status]) => {
+              const ready = Boolean(status.image_configured || status.license_configured);
+              return (
+                <div className="health-list__row" key={name}>
+                  <span className={`status-dot status-dot--${ready ? "healthy" : "mock"}`} aria-hidden="true" />
+                  <div><strong>{label(name)}</strong><span>{status.edition || t("Unknown edition")}</span></div>
+                  <span>{ready ? t("Configured") : t("Pending")}</span>
+                </div>
+              );
+            }) : <EmptyState title={t("No enterprise status")} detail={t("Enterprise product readiness will appear after configuration.")} />}
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function RunbooksPage({ onNavigate }: { onNavigate: (view: PortalView) => void }) {
+  const { t } = usePreferences();
+  const runbooks: Array<{ title: string; detail: string; command: string; view: PortalView }> = [
+    { title: "Investigate secret exposure", detail: "Correlate Vault Radar, Vault lease, and pgAudit evidence.", command: "docs/runbook.md#vault-radar-and-data-security", view: "investigations" },
+    { title: "Review response automation", detail: "Preview Argo or StackStorm steps without executing a change.", command: "scripts/verify-automation-controls.sh", view: "automation" },
+    { title: "Validate portal deployment", detail: "Package, deploy through SSM, and verify health without SSH.", command: "scripts/deploy-portal-to-elastic-host.sh", view: "system-health" },
+    { title: "Refresh AWS lab inventory", detail: "Export approved EC2 and EKS metadata for Vault Radar scanning.", command: "scripts/run-vault-radar-aws-lab-inventory-scan.sh", view: "data-security" },
+    { title: "Review Kubernetes optimization", detail: "Compare OpenCost and KRR recommendations before dry-run.", command: "scripts/sync-opencost-to-elastic.sh", view: "cloud-optimization" },
+  ];
+
+  return (
+    <>
+      <section className="runbook-guardrails" aria-label={t("Operator guardrails")}>
+        <ShieldCheck size={22} aria-hidden="true" />
+        <div>
+          <strong>{t("Operator guardrails")}</strong>
+          <span>{t("Use SSM, keep secret material out of logs, and review every remediation as a dry-run first.")}</span>
+        </div>
+      </section>
+      <section className="operations-panel runbook-panel" aria-labelledby="runbook-library-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="runbook-library-title">{t("Runbook library")}</h2>
+            <p>{t("Operator procedures mapped to the portal workflow")}</p>
+          </div>
+          <span className="compact-meta">{t("{count} procedures", { count: runbooks.length })}</span>
+        </div>
+        <div className="runbook-list">
+          {runbooks.map((runbook, index) => (
+            <article className="runbook-row" key={runbook.title}>
+              <span className="runbook-row__index">{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <h3>{t(runbook.title)}</h3>
+                <p>{t(runbook.detail)}</p>
+                <code>{runbook.command}</code>
+              </div>
+              <button className="secondary-command" type="button" onClick={() => onNavigate(runbook.view)}>
+                {t("Open workspace")}
+                <ArrowRight size={15} aria-hidden="true" />
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -1736,7 +2195,7 @@ function AssistantPanel({
                             <strong>{item.title}</strong>
                             <p>{item.detail}</p>
                             {item.actionId ? (
-                              <a href="#automation" onClick={onClose}>
+                              <a href="#/automation" onClick={onClose}>
                                 {t("Review dry-run action")}
                               </a>
                             ) : null}
@@ -2607,6 +3066,26 @@ function Icon({ name }: { name: IconName }) {
 }
 
 let assistantMessageSequence = 0;
+
+function portalViewFromHash(hash: string): PortalView {
+  const route = hash.replace(/^#\/?/, "").split(/[/?]/)[0];
+  if (PORTAL_VIEWS.includes(route as PortalView)) return route as PortalView;
+
+  const legacyRoutes: Record<string, PortalView> = {
+    "vault-radar-findings": "investigations",
+    vault: "investigations",
+    audit: "data-security",
+    "data-security": "data-security",
+    "vault-radar-sources": "data-security",
+    "application-risk": "application-risk",
+    automation: "automation",
+    observability: "observability",
+    "kubernetes-optimization": "cloud-optimization",
+    "stream-health": "system-health",
+    runbooks: "runbooks",
+  };
+  return legacyRoutes[route] ?? "overview";
+}
 
 function createAssistantMessageId(role: "user" | "assistant") {
   assistantMessageSequence += 1;

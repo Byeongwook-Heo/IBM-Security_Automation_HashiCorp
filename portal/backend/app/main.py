@@ -5,13 +5,29 @@ import os
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-from fastapi import FastAPI, Request, Depends, HTTPException, Query, Response
+from fastapi import FastAPI, Request, Depends, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .assistant import generate_assistant_response
-from .auth import current_user, require_role
+from .auth import authentication_state, current_user, require_role
+from .automation import (
+    AutomationConflictError,
+    AutomationExecutionDisabledError,
+    AutomationNotFoundError,
+    AutomationService,
+    AutomationStateError,
+)
+from .case_management import CaseNotFoundError, CaseRepository
+from .evidence_tools import collect_assistant_evidence_tools
 from .models import (
     AssistantChatRequest,
     AssistantChatResponse,
+    AuthMeResponse,
+    AutomationApprovalRequest,
+    AutomationCreateRequest,
+    CaseCommentRequest,
+    CaseCreateRequest,
+    CaseEvidenceRequest,
+    CaseUpdateRequest,
     CommonEvent,
     ObservabilityLink,
     ObservabilityLinksResponse,
@@ -25,6 +41,8 @@ from .elastic_repository import (
     ElasticRepositoryError,
     mask_sensitive_raw_event,
 )
+from .status_services import collect_data_source_freshness
+from .vault_client import collect_vault_metadata
 
 app = FastAPI(title="Information Security Portal")
 cors_origins = [
@@ -36,7 +54,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-User-Email",
+        "X-User-Groups",
+    ],
 )
 
 OBSERVABILITY_LINK_ENV = (
@@ -51,6 +75,14 @@ SENSITIVE_URL_QUERY_MARKERS = ("token", "secret", "password", "api_key", "apikey
 def _elastic_repo() -> ElasticRepository | None:
     elastic = ElasticRepository.from_env()
     return elastic if elastic.configured else None
+
+
+def _case_repository() -> CaseRepository:
+    return CaseRepository.from_env()
+
+
+def _automation_service() -> AutomationService:
+    return AutomationService.from_env()
 
 
 def _safe_observability_url(value: str | None) -> str | None:
@@ -122,6 +154,13 @@ async def audit_mutations(request: Request, call_next):
 
 @app.get("/health")
 def health(): return {"status":"ok","mode":"mock+elastic" if _elastic_repo() else "mock"}
+
+
+@app.get("/api/auth/me", response_model=AuthMeResponse)
+def auth_me(identity=Depends(authentication_state)):
+    return identity
+
+
 @app.get("/metrics", include_in_schema=False)
 def metrics():
     data = summary()
@@ -245,6 +284,22 @@ def elastic_events(limit: int = Query(50, ge=1, le=500)):
 @app.get("/api/vault/audit-events")
 def vault_audit_events(limit: int = Query(50, ge=1, le=500)):
     return _elastic_list(lambda elastic: elastic.vault_audit_events(limit=limit))
+
+
+@app.get("/api/vault/metadata")
+def vault_metadata(user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "AUDITOR"])
+    return collect_vault_metadata()
+
+
+@app.get("/api/data-sources/freshness")
+def data_source_freshness():
+    return collect_data_source_freshness(
+        elastic=_elastic_repo(),
+        kubernetes_fallback=repo.kubernetes_platform,
+    )
+
+
 @app.get("/api/db-audit/events")
 def db_audit_events(limit: int = Query(50, ge=1, le=500)):
     return _elastic_list(lambda elastic: elastic.db_audit_events(limit=limit))
@@ -261,10 +316,209 @@ def enterprise(): return enterprise_status()
 @app.post("/api/assistant/chat", response_model=AssistantChatResponse)
 def assistant_chat(req: AssistantChatRequest, user=Depends(current_user)):
     require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "AUDITOR"])
-    return generate_assistant_response(req)
+    tool_results = collect_assistant_evidence_tools(
+        elastic=_elastic_repo(),
+        kubernetes_fallback=repo.kubernetes_platform,
+    )
+    return generate_assistant_response(req, tool_results=tool_results)
+
+
+@app.get("/api/cases")
+def list_cases(
+    status: str | None = Query(default=None, max_length=40),
+    owner: str | None = Query(default=None, max_length=254),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=10000),
+    user=Depends(current_user),
+):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "AUDITOR"])
+    return _case_repository().list(
+        status=status,
+        owner=owner,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.post("/api/cases", status_code=201)
+def create_managed_case(req: CaseCreateRequest, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    return _case_repository().create(req, user["email"])
+
+
+@app.get("/api/cases/{case_id}")
+def get_managed_case(case_id: str, user=Depends(current_user)):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "AUDITOR"])
+    try:
+        return _case_repository().get(case_id)
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Case not found") from exc
+
+
+@app.patch("/api/cases/{case_id}")
+def update_managed_case(
+    case_id: str,
+    req: CaseUpdateRequest,
+    user=Depends(current_user),
+):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    try:
+        return _case_repository().update(case_id, req, user["email"])
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Case not found") from exc
+
+
+@app.post("/api/cases/{case_id}/comments", status_code=201)
+def add_case_comment(
+    case_id: str,
+    req: CaseCommentRequest,
+    user=Depends(current_user),
+):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    try:
+        return _case_repository().add_comment(case_id, req, user["email"])
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Case not found") from exc
+
+
+@app.post("/api/cases/{case_id}/evidence", status_code=201)
+def add_case_evidence(
+    case_id: str,
+    req: CaseEvidenceRequest,
+    user=Depends(current_user),
+):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    try:
+        return _case_repository().add_evidence(case_id, req, user["email"])
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Case not found") from exc
+
+
+@app.get("/api/cases/{case_id}/audit")
+def case_audit(
+    case_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    user=Depends(current_user),
+):
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "AUDITOR"])
+    try:
+        return _case_repository().audit(case_id, limit=limit)
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Case not found") from exc
+
+
+@app.get("/api/automation/requests")
+def list_automation_requests(
+    status: str | None = Query(default=None, max_length=40),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=10000),
+    user=Depends(current_user),
+):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA", "AUDITOR"],
+    )
+    return _automation_service().list(status=status, limit=limit, offset=offset)
+
+
+@app.post("/api/automation/requests", status_code=201)
+def create_automation_request(
+    req: AutomationCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user=Depends(current_user),
+):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA"],
+    )
+    if idempotency_key and req.idempotency_key and idempotency_key != req.idempotency_key:
+        raise HTTPException(
+            status_code=409,
+            detail="Header and body idempotency keys do not match",
+        )
+    resolved_key = idempotency_key or req.idempotency_key
+    if not resolved_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key is required")
+    try:
+        return _automation_service().create(
+            req,
+            user["email"],
+            idempotency_key=resolved_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AutomationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/automation/requests/{request_id}")
+def get_automation_request(request_id: str, user=Depends(current_user)):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA", "AUDITOR"],
+    )
+    try:
+        return _automation_service().get(request_id)
+    except AutomationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Automation request not found") from exc
+
+
+@app.post("/api/automation/requests/{request_id}/approvals")
+def approve_automation_request(
+    request_id: str,
+    req: AutomationApprovalRequest,
+    user=Depends(current_user),
+):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA"],
+    )
+    try:
+        return _automation_service().approve(request_id, req, user["email"])
+    except AutomationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Automation request not found") from exc
+    except (AutomationConflictError, AutomationStateError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/automation/requests/{request_id}/dispatch")
+def dispatch_automation_request(request_id: str, user=Depends(current_user)):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA"],
+    )
+    try:
+        return _automation_service().dispatch(request_id, user["email"])
+    except AutomationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Automation request not found") from exc
+    except (AutomationExecutionDisabledError, AutomationStateError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/automation/requests/{request_id}/audit")
+def automation_request_audit(
+    request_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    user=Depends(current_user),
+):
+    require_role(
+        user,
+        ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA", "AUDITOR"],
+    )
+    try:
+        return _automation_service().audit(request_id, limit=limit)
+    except AutomationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Automation request not found") from exc
+
+
 @app.post("/api/workflows/cases")
 def create_case(req: WorkflowRequest, user=Depends(current_user)):
-    require_role(user,["SOC_ADMIN","SECURITY_ANALYST"]); return {"case_id":"case-demo-1","status":"created","dry_run":req.dry_run}
+    require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST"])
+    return {
+        "case_id": "case-demo-1",
+        "status": "created",
+        "dry_run": req.dry_run,
+    }
 @app.post("/api/workflows/actions/revoke-credential")
 def revoke(req: WorkflowRequest, user=Depends(current_user)):
     require_role(user, ["SOC_ADMIN", "SECURITY_ANALYST", "DBA"])

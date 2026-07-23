@@ -1,0 +1,96 @@
+# Prometheus chart values overlay. Rules contain aggregate health only.
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: vault-radar-continuous-scan
+        rules:
+          - alert: VaultRadarScanFailed
+            expr: vault_radar_scan_success == 0
+            for: 5m
+            labels:
+              severity: critical
+              service: vault-radar
+            annotations:
+              summary: "Vault Radar scheduled scan failed"
+              description: "The {{ $labels.source }} scan reported a non-success status."
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+          - alert: VaultRadarScanStale
+            expr: (time() - vault_radar_scan_last_success_timestamp_seconds) > vault_radar_scan_stale_after_seconds
+            for: 15m
+            labels:
+              severity: warning
+              service: vault-radar
+            annotations:
+              summary: "Vault Radar scan is stale"
+              description: "The {{ $labels.source }} source exceeded its freshness objective."
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+          - alert: VaultRadarTfeMetricsMissing
+            expr: absent(vault_radar_scan_last_run_timestamp_seconds{source="tfe"})
+            for: 3h
+            labels:
+              severity: warning
+              service: vault-radar
+              source: tfe
+            annotations:
+              summary: "TFE Vault Radar scan metrics are missing"
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+          - alert: VaultRadarS3MetricsMissing
+            expr: absent(vault_radar_scan_last_run_timestamp_seconds{source="s3"})
+            for: 6h
+            labels:
+              severity: warning
+              service: vault-radar
+              source: s3
+            annotations:
+              summary: "S3 Vault Radar scan metrics are missing"
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+          - alert: VaultRadarEc2EksMetricsMissing
+            expr: absent(vault_radar_scan_last_run_timestamp_seconds{source="ec2-eks"})
+            for: 9h
+            labels:
+              severity: warning
+              service: vault-radar
+              source: ec2-eks
+            annotations:
+              summary: "EC2/EKS Vault Radar scan metrics are missing"
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+          - alert: VaultRadarCronJobFailed
+            expr: kube_job_status_failed{namespace="security-lab",job_name=~"vault-radar-(tfe|s3|ec2-eks)-scan-.*"} > 0
+            for: 5m
+            labels:
+              severity: critical
+              service: vault-radar
+            annotations:
+              summary: "Vault Radar Kubernetes Job failed"
+              description: "Job {{ $labels.job_name }} failed without producing a healthy scan result."
+              runbook: "docs/operations-continuity.md#vault-radar-failure-response"
+      - name: notification-delivery
+        rules:
+          - alert: AlertmanagerNotificationRelayUnavailable
+            expr: absent(up{service="alertmanager-notification-relay"}) or max(up{service="alertmanager-notification-relay"} == 0)
+            for: 15m
+            labels:
+              severity: warning
+              service: alertmanager
+            annotations:
+              summary: "Alertmanager notification relay is unavailable"
+              runbook: "docs/operations-continuity.md#alert-delivery-response"
+          - alert: AlertmanagerNotificationDeliveryFailed
+            expr: increase(alertmanager_notification_relay_failures_total[15m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+              service: alertmanager
+            annotations:
+              summary: "One or more alert notifications failed"
+              runbook: "docs/operations-continuity.md#alert-delivery-response"
+          - alert: AlertmanagerNotificationChannelNotConfigured
+            expr: alertmanager_notification_relay_configured_channels == 0
+            for: 30m
+            labels:
+              severity: info
+              service: alertmanager
+            annotations:
+              summary: "Alert notifications are fail-closed"
+              description: "No external notification destination is enabled."
+              runbook: "docs/operations-continuity.md#alertmanager-notifications"

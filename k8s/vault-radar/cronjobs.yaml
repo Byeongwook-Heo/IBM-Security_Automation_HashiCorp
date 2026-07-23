@@ -1,0 +1,336 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-radar-tfe-scan
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: vault-radar-continuous-scan
+    app.kubernetes.io/component: tfe-scanner
+spec:
+  schedule: "17 */2 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vault-radar-continuous-scan
+            vault-radar.hashicorp.com/source: tfe
+        spec:
+          serviceAccountName: vault-radar-continuous-scan
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: scanner
+              image: VAULT_RADAR_IMAGE_PLACEHOLDER
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/opt/vault-radar-runner/run-scan.sh"]
+              env:
+                - name: SCAN_SOURCE
+                  value: tfe
+                - name: STALE_AFTER_SECONDS
+                  value: "10800"
+                - name: PUSHGATEWAY_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: pushgateway-url
+                - name: TFE_ADDRESS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: tfe-address
+                - name: TFE_ORG_NAME
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: tfe-org-name
+                - name: AWS_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: aws-region
+                - name: HOME
+                  value: /tmp
+                - name: SCAN_LIMIT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: scan-limit
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 192Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runner
+                  mountPath: /opt/vault-radar-runner
+                  readOnly: true
+                - name: credentials
+                  mountPath: /var/run/vault-radar
+                  readOnly: true
+                - name: workspace
+                  mountPath: /work
+                - name: runtime
+                  mountPath: /tmp
+          volumes:
+            - name: runner
+              configMap:
+                name: vault-radar-continuous-scan-runner
+                defaultMode: 0550
+            - name: credentials
+              secret:
+                secretName: vault-radar-continuous-scan-secrets
+                defaultMode: 0440
+            - name: workspace
+              emptyDir:
+                medium: Memory
+                sizeLimit: 256Mi
+            - name: runtime
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-radar-s3-scan
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: vault-radar-continuous-scan
+    app.kubernetes.io/component: s3-scanner
+spec:
+  schedule: "41 */4 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1200
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 5400
+      ttlSecondsAfterFinished: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vault-radar-continuous-scan
+            vault-radar.hashicorp.com/source: s3
+        spec:
+          serviceAccountName: vault-radar-continuous-scan
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: scanner
+              image: VAULT_RADAR_IMAGE_PLACEHOLDER
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/opt/vault-radar-runner/run-scan.sh"]
+              env:
+                - name: SCAN_SOURCE
+                  value: s3
+                - name: STALE_AFTER_SECONDS
+                  value: "21600"
+                - name: PUSHGATEWAY_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: pushgateway-url
+                - name: S3_BUCKET
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: s3-bucket
+                - name: AWS_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: aws-region
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: aws-region
+                - name: HOME
+                  value: /tmp
+                - name: SCAN_LIMIT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: scan-limit
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runner
+                  mountPath: /opt/vault-radar-runner
+                  readOnly: true
+                - name: credentials
+                  mountPath: /var/run/vault-radar
+                  readOnly: true
+                - name: workspace
+                  mountPath: /work
+                - name: runtime
+                  mountPath: /tmp
+          volumes:
+            - name: runner
+              configMap:
+                name: vault-radar-continuous-scan-runner
+                defaultMode: 0550
+            - name: credentials
+              secret:
+                secretName: vault-radar-continuous-scan-secrets
+                defaultMode: 0440
+            - name: workspace
+              emptyDir:
+                medium: Memory
+                sizeLimit: 512Mi
+            - name: runtime
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-radar-ec2-eks-scan
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: vault-radar-continuous-scan
+    app.kubernetes.io/component: aws-inventory-scanner
+spec:
+  schedule: "53 */6 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 5400
+      ttlSecondsAfterFinished: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vault-radar-continuous-scan
+            vault-radar.hashicorp.com/source: ec2-eks
+        spec:
+          serviceAccountName: vault-radar-continuous-scan
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: scanner
+              image: VAULT_RADAR_IMAGE_PLACEHOLDER
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/opt/vault-radar-runner/run-scan.sh"]
+              env:
+                - name: SCAN_SOURCE
+                  value: ec2-eks
+                - name: STALE_AFTER_SECONDS
+                  value: "32400"
+                - name: PUSHGATEWAY_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: pushgateway-url
+                - name: AWS_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: aws-region
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: aws-region
+                - name: HOME
+                  value: /tmp
+                - name: SCAN_LIMIT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: vault-radar-continuous-scan-settings
+                      key: scan-limit
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runner
+                  mountPath: /opt/vault-radar-runner
+                  readOnly: true
+                - name: credentials
+                  mountPath: /var/run/vault-radar
+                  readOnly: true
+                - name: workspace
+                  mountPath: /work
+                - name: runtime
+                  mountPath: /tmp
+          volumes:
+            - name: runner
+              configMap:
+                name: vault-radar-continuous-scan-runner
+                defaultMode: 0550
+            - name: credentials
+              secret:
+                secretName: vault-radar-continuous-scan-secrets
+                defaultMode: 0440
+            - name: workspace
+              emptyDir:
+                medium: Memory
+                sizeLimit: 512Mi
+            - name: runtime
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Mi

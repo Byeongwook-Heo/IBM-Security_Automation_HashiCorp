@@ -10,6 +10,11 @@ This document describes the architecture for the integrated security lab.
 - Concert is represented by open source CVE, code security, certificate, resilience, and posture signals surfaced through the Information Security Portal.
 - Security Lake and S3 Object Lock are raw retention layers.
 - The portal provides summary, correlation, approval, automation, evidence, and deep links.
+- Portal user access is designed for a dedicated HTTPS ALB, Keycloak OIDC, and
+  oauth2-proxy. Nginx removes caller-supplied identity headers before sending a
+  verified identity to the backend.
+- Vault metadata uses a dedicated short-lived, read-only AppRole whose Role ID
+  and Secret ID remain in Secrets Manager.
 - Production-like risky changes are marked **HUMAN REVIEW REQUIRED**.
 
 ## Details
@@ -50,6 +55,12 @@ The rows below reflect the live inventory re-verified on 2026-07-14.
    Vault PKI, backup, and resilience metadata before portal or Elastic ingest.
    A six-hour EKS Fargate CronJob runs the Trivy, Semgrep, and Syft baseline
    with digest-pinned images and stable document IDs.
+8. The portal correlates allowlisted Elastic, Vault, Kubernetes, and Prometheus
+   metadata for the evidence assistant. Secret values and authentication
+   material are excluded from its context.
+9. Cases and automation approvals persist in a dedicated backend volume.
+   Requester and both approvers must be different identities; dispatch remains
+   disabled and plan-only unless an operator explicitly enables it.
 
 Terraform state is stored at
 `s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`

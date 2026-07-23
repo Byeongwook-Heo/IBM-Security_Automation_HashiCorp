@@ -13,13 +13,166 @@ LOKI_URL="${LOKI_URL:-}"
 TEMPO_URL="${TEMPO_URL:-}"
 ENABLE_ELASTIC_PEER_PROXY="${ENABLE_ELASTIC_PEER_PROXY:-true}"
 PORTAL_AUTH_MODE="${PORTAL_AUTH_MODE:-deny}"
+PORTAL_HTTPS_MODE="${PORTAL_HTTPS_MODE:-disabled}"
+PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-}"
+PORTAL_OIDC_ISSUER_URL="${PORTAL_OIDC_ISSUER_URL:-}"
+PORTAL_OIDC_SECRET_ID="${PORTAL_OIDC_SECRET_ID:-}"
+PORTAL_OIDC_ALLOWED_GROUP="${PORTAL_OIDC_ALLOWED_GROUP:-SECURITY_ANALYST}"
+PORTAL_OIDC_GROUPS_CLAIM="${PORTAL_OIDC_GROUPS_CLAIM:-groups}"
+ENABLE_VAULT_DIRECT="${ENABLE_VAULT_DIRECT:-false}"
+VAULT_ADDR="${VAULT_ADDR:-http://security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200}"
+VAULT_ROLE_ID_SECRET_ID="${VAULT_ROLE_ID_SECRET_ID:-security-portal-test/vault/readonly-role-id}"
+VAULT_SECRET_ID_SECRET_ID="${VAULT_SECRET_ID_SECRET_ID:-security-portal-test/vault/readonly-secret-id}"
+VAULT_NAMESPACE="${VAULT_NAMESPACE:-}"
+VAULT_APPROLE_AUTH_MOUNT="${VAULT_APPROLE_AUTH_MOUNT:-approle}"
+VAULT_PKI_MOUNT="${VAULT_PKI_MOUNT:-pki}"
+VAULT_LEASE_PREFIX="${VAULT_LEASE_PREFIX:-}"
+VAULT_TIMEOUT_SECONDS="${VAULT_TIMEOUT_SECONDS:-5}"
 AI_ASSISTANT_PROVIDER="${AI_ASSISTANT_PROVIDER:-evidence}"
 AI_ASSISTANT_MODEL_ID="${AI_ASSISTANT_MODEL_ID:-}"
 AI_ASSISTANT_REGION="${AI_ASSISTANT_REGION:-$REGION}"
 AI_ASSISTANT_MAX_TOKENS="${AI_ASSISTANT_MAX_TOKENS:-700}"
 
+validate_cidr() {
+  python3 - "$1" <<'PY'
+import ipaddress
+import sys
+
+try:
+    ipaddress.ip_network(sys.argv[1], strict=False)
+except ValueError:
+    raise SystemExit(1)
+PY
+}
+
+validate_https_url() {
+  local value="$1"
+  local kind="$2"
+  python3 - "$value" "$kind" <<'PY'
+import re
+import sys
+import ipaddress
+from urllib.parse import urlsplit
+
+value, kind = sys.argv[1:]
+try:
+    parsed = urlsplit(value)
+    port = parsed.port
+except ValueError:
+    raise SystemExit(1)
+
+hostname = parsed.hostname or ""
+try:
+    ipaddress.ip_address(hostname)
+    host_is_valid = True
+except ValueError:
+    host_is_valid = (
+        len(hostname) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in hostname.rstrip(".").split(".")
+        )
+    )
+
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or not host_is_valid
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit(1)
+
+if kind == "origin" and parsed.path not in ("", "/"):
+    raise SystemExit(1)
+if kind == "issuer" and not re.fullmatch(r"[A-Za-z0-9._~!()*+,;=:@%/-]*", parsed.path):
+    raise SystemExit(1)
+PY
+}
+
+validate_vault_url() {
+  python3 - "$1" <<'PY'
+import ipaddress
+import re
+import sys
+from urllib.parse import urlsplit
+
+try:
+    parsed = urlsplit(sys.argv[1])
+    port = parsed.port
+except ValueError:
+    raise SystemExit(1)
+
+hostname = parsed.hostname or ""
+try:
+    ipaddress.ip_address(hostname)
+    host_is_valid = True
+except ValueError:
+    host_is_valid = (
+        len(hostname) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in hostname.rstrip(".").split(".")
+        )
+    )
+
+if (
+    parsed.scheme not in {"http", "https"}
+    or not parsed.hostname
+    or not host_is_valid
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.path not in ("", "/")
+    or parsed.query
+    or parsed.fragment
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit(1)
+PY
+}
+
+for required_command in aws jq python3 base64; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    echo "$required_command is required for portal deployment" >&2
+    exit 1
+  fi
+done
+
+if [[ ! "$REGION" =~ ^[a-z]{2}(-[a-z]+)?-[a-z0-9-]+-[0-9]+$ ]]; then
+  echo "AWS region must be a valid region name" >&2
+  exit 1
+fi
+
+if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]{8}([0-9a-f]{9})?$ ]]; then
+  echo "INSTANCE_ID must be a valid EC2 instance ID" >&2
+  exit 1
+fi
+
+if [[ -z "$ELASTIC_SECRET_ID" || ! "$ELASTIC_SECRET_ID" =~ ^[A-Za-z0-9/_+=.@:-]+$ ]]; then
+  echo "ELASTIC_SECRET_ID must be a valid Secrets Manager secret ID or ARN" >&2
+  exit 1
+fi
+
+if [[ ! "$SSM_CHUNK_SIZE" =~ ^[0-9]+$ ]] || (( SSM_CHUNK_SIZE < 1000 || SSM_CHUNK_SIZE > 20000 )); then
+  echo "SSM_CHUNK_SIZE must be an integer between 1000 and 20000" >&2
+  exit 1
+fi
+
 if [[ -z "$ADMIN_CIDR" ]]; then
   echo "ADMIN_CIDR is required, for example ADMIN_CIDR=121.190.86.98/32" >&2
+  exit 1
+fi
+
+if ! validate_cidr "$ADMIN_CIDR"; then
+  echo "ADMIN_CIDR must be a valid IPv4 or IPv6 CIDR" >&2
+  exit 1
+fi
+
+if [[ ! "$PORTAL_PORT" =~ ^[0-9]+$ ]] || (( PORTAL_PORT < 1 || PORTAL_PORT > 65535 )); then
+  echo "PORTAL_PORT must be an integer between 1 and 65535" >&2
   exit 1
 fi
 
@@ -28,8 +181,88 @@ if [[ "$ENABLE_ELASTIC_PEER_PROXY" != "true" && "$ENABLE_ELASTIC_PEER_PROXY" != 
   exit 1
 fi
 
-if [[ "$PORTAL_AUTH_MODE" != "deny" && "$PORTAL_AUTH_MODE" != "trusted_headers" ]]; then
-  echo "PORTAL_AUTH_MODE must be deny or trusted_headers for this deployment" >&2
+if [[ "$ENABLE_VAULT_DIRECT" != "true" && "$ENABLE_VAULT_DIRECT" != "false" ]]; then
+  echo "ENABLE_VAULT_DIRECT must be true or false" >&2
+  exit 1
+fi
+
+if [[ "$ENABLE_VAULT_DIRECT" == "true" ]]; then
+  if ! validate_vault_url "$VAULT_ADDR"; then
+    echo "VAULT_ADDR must be an http(s) origin without credentials, path, query, or fragment" >&2
+    exit 1
+  fi
+  for vault_secret_id in "$VAULT_ROLE_ID_SECRET_ID" "$VAULT_SECRET_ID_SECRET_ID"; do
+    if [[ -z "$vault_secret_id" || ! "$vault_secret_id" =~ ^[A-Za-z0-9/_+=.@:-]+$ ]]; then
+      echo "Vault Secrets Manager IDs must be valid secret IDs or ARNs" >&2
+      exit 1
+    fi
+  done
+  for vault_path in "$VAULT_NAMESPACE" "$VAULT_APPROLE_AUTH_MOUNT" "$VAULT_PKI_MOUNT" "$VAULT_LEASE_PREFIX"; do
+    if [[ -n "$vault_path" && ! "$vault_path" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]]; then
+      echo "Vault namespace, mount, and lease paths contain unsupported characters" >&2
+      exit 1
+    fi
+  done
+  if ! python3 - "$VAULT_TIMEOUT_SECONDS" <<'PY'
+import sys
+
+try:
+    timeout = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+if not 0.5 <= timeout <= 30:
+    raise SystemExit(1)
+PY
+  then
+    echo "VAULT_TIMEOUT_SECONDS must be between 0.5 and 30" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$PORTAL_AUTH_MODE" != "deny" && "$PORTAL_AUTH_MODE" != "trusted_headers" && "$PORTAL_AUTH_MODE" != "oidc" ]]; then
+  echo "PORTAL_AUTH_MODE must be deny, trusted_headers, or oidc for this deployment" >&2
+  exit 1
+fi
+
+if [[ "$PORTAL_HTTPS_MODE" != "disabled" && "$PORTAL_HTTPS_MODE" != "alb" ]]; then
+  echo "PORTAL_HTTPS_MODE must be disabled or alb" >&2
+  exit 1
+fi
+
+if [[ "$PORTAL_HTTPS_MODE" == "alb" ]]; then
+  if [[ -z "$PORTAL_PUBLIC_URL" ]] || ! validate_https_url "$PORTAL_PUBLIC_URL" origin; then
+    echo "PORTAL_PUBLIC_URL must be an HTTPS origin without a path when PORTAL_HTTPS_MODE=alb" >&2
+    exit 1
+  fi
+  PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL%/}"
+elif [[ -n "$PORTAL_PUBLIC_URL" ]]; then
+  echo "PORTAL_PUBLIC_URL must be empty when PORTAL_HTTPS_MODE=disabled" >&2
+  exit 1
+fi
+
+if [[ "$PORTAL_AUTH_MODE" == "oidc" ]]; then
+  if [[ "$PORTAL_HTTPS_MODE" != "alb" ]]; then
+    echo "PORTAL_AUTH_MODE=oidc requires PORTAL_HTTPS_MODE=alb" >&2
+    exit 1
+  fi
+  if [[ -z "$PORTAL_OIDC_ISSUER_URL" ]] || ! validate_https_url "$PORTAL_OIDC_ISSUER_URL" issuer; then
+    echo "PORTAL_OIDC_ISSUER_URL must be a valid HTTPS Keycloak issuer URL" >&2
+    exit 1
+  fi
+  if [[ -z "$PORTAL_OIDC_SECRET_ID" || ! "$PORTAL_OIDC_SECRET_ID" =~ ^[A-Za-z0-9/_+=.@:-]+$ ]]; then
+    echo "PORTAL_OIDC_SECRET_ID must be a valid Secrets Manager secret ID or ARN" >&2
+    exit 1
+  fi
+  if [[ ! "$PORTAL_OIDC_ALLOWED_GROUP" =~ ^[A-Za-z0-9_./:-]+$ ]]; then
+    echo "PORTAL_OIDC_ALLOWED_GROUP contains unsupported characters" >&2
+    exit 1
+  fi
+  if [[ ! "$PORTAL_OIDC_GROUPS_CLAIM" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+    echo "PORTAL_OIDC_GROUPS_CLAIM contains unsupported characters" >&2
+    exit 1
+  fi
+elif [[ -n "$PORTAL_OIDC_ISSUER_URL" || -n "$PORTAL_OIDC_SECRET_ID" ]]; then
+  echo "OIDC settings may only be supplied when PORTAL_AUTH_MODE=oidc" >&2
   exit 1
 fi
 
@@ -74,27 +307,44 @@ for observability_url in "$GRAFANA_URL" "$PROMETHEUS_URL" "$LOKI_URL" "$TEMPO_UR
 done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 ARTIFACT_PATH="$("$ROOT_DIR/scripts/package-portal-runtime.sh" | tail -n 1)"
+ARTIFACT_SHA256="$(python3 - "$ARTIFACT_PATH" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import sys
+
+print(sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+if [[ ! "$ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Unable to calculate the portal artifact SHA-256" >&2
+  exit 1
+fi
 ARTIFACT_B64="$(base64 < "$ARTIFACT_PATH" | tr -d '\n')"
 ARTIFACT_B64_LEN="${#ARTIFACT_B64}"
 
-SECURITY_GROUP_IDS="$(aws ec2 describe-instances \
-  --region "$REGION" \
-  --instance-ids "$INSTANCE_ID" \
-  --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' \
-  --output text)"
-
-for sg_id in $SECURITY_GROUP_IDS; do
-  if ! ingress_error="$(aws ec2 authorize-security-group-ingress \
+if [[ "$PORTAL_HTTPS_MODE" == "disabled" ]]; then
+  SECURITY_GROUP_IDS="$(aws ec2 describe-instances \
     --region "$REGION" \
-    --group-id "$sg_id" \
-    --ip-permissions "IpProtocol=tcp,FromPort=$PORTAL_PORT,ToPort=$PORTAL_PORT,IpRanges=[{CidrIp=$ADMIN_CIDR,Description=Security portal from admin CIDR}]" 2>&1)"; then
-    if [[ "$ingress_error" != *"InvalidPermission.Duplicate"* ]]; then
-      echo "Failed to authorize portal ingress on $sg_id: $ingress_error" >&2
-      exit 1
+    --instance-ids "$INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' \
+    --output text)"
+
+  for sg_id in $SECURITY_GROUP_IDS; do
+    if ! ingress_error="$(aws ec2 authorize-security-group-ingress \
+      --region "$REGION" \
+      --group-id "$sg_id" \
+      --ip-permissions "IpProtocol=tcp,FromPort=$PORTAL_PORT,ToPort=$PORTAL_PORT,IpRanges=[{CidrIp=$ADMIN_CIDR,Description=Security portal from admin CIDR}]" 2>&1)"; then
+      if [[ "$ingress_error" != *"InvalidPermission.Duplicate"* ]]; then
+        echo "Failed to authorize portal ingress on $sg_id: $ingress_error" >&2
+        exit 1
+      fi
     fi
-  fi
-done
+  done
+else
+  echo "Direct portal ingress is not changed in ALB HTTPS mode."
+fi
 
 run_ssm() {
   local command="$1"
@@ -146,7 +396,9 @@ EOF" 120 >/dev/null
   offset=$((offset + SSM_CHUNK_SIZE))
   chunk_index=$((chunk_index + 1))
 done
-run_ssm "base64 -d /tmp/security-portal-runtime.tar.gz.b64 > /tmp/security-portal-runtime.tar.gz && rm -f /tmp/security-portal-runtime.tar.gz.b64" 120 >/dev/null
+run_ssm "base64 -d /tmp/security-portal-runtime.tar.gz.b64 > /tmp/security-portal-runtime.tar.gz &&
+printf '%s  %s\n' '$ARTIFACT_SHA256' /tmp/security-portal-runtime.tar.gz | sha256sum -c - >/dev/null &&
+rm -f /tmp/security-portal-runtime.tar.gz.b64" 120 >/dev/null
 
 REMOTE_SCRIPT="$(
   REGION="$REGION" \
@@ -158,6 +410,21 @@ REMOTE_SCRIPT="$(
   TEMPO_URL="$TEMPO_URL" \
   ENABLE_ELASTIC_PEER_PROXY="$ENABLE_ELASTIC_PEER_PROXY" \
   PORTAL_AUTH_MODE="$PORTAL_AUTH_MODE" \
+  PORTAL_HTTPS_MODE="$PORTAL_HTTPS_MODE" \
+  PORTAL_PUBLIC_URL="$PORTAL_PUBLIC_URL" \
+  PORTAL_OIDC_ISSUER_URL="$PORTAL_OIDC_ISSUER_URL" \
+  PORTAL_OIDC_SECRET_ID="$PORTAL_OIDC_SECRET_ID" \
+  PORTAL_OIDC_ALLOWED_GROUP="$PORTAL_OIDC_ALLOWED_GROUP" \
+  PORTAL_OIDC_GROUPS_CLAIM="$PORTAL_OIDC_GROUPS_CLAIM" \
+  ENABLE_VAULT_DIRECT="$ENABLE_VAULT_DIRECT" \
+  VAULT_ADDR="$VAULT_ADDR" \
+  VAULT_ROLE_ID_SECRET_ID="$VAULT_ROLE_ID_SECRET_ID" \
+  VAULT_SECRET_ID_SECRET_ID="$VAULT_SECRET_ID_SECRET_ID" \
+  VAULT_NAMESPACE="$VAULT_NAMESPACE" \
+  VAULT_APPROLE_AUTH_MOUNT="$VAULT_APPROLE_AUTH_MOUNT" \
+  VAULT_PKI_MOUNT="$VAULT_PKI_MOUNT" \
+  VAULT_LEASE_PREFIX="$VAULT_LEASE_PREFIX" \
+  VAULT_TIMEOUT_SECONDS="$VAULT_TIMEOUT_SECONDS" \
   AI_ASSISTANT_PROVIDER="$AI_ASSISTANT_PROVIDER" \
   AI_ASSISTANT_MODEL_ID="$AI_ASSISTANT_MODEL_ID" \
   AI_ASSISTANT_REGION="$AI_ASSISTANT_REGION" \
@@ -180,6 +447,21 @@ for key in (
     "TEMPO_URL",
     "ENABLE_ELASTIC_PEER_PROXY",
     "PORTAL_AUTH_MODE",
+    "PORTAL_HTTPS_MODE",
+    "PORTAL_PUBLIC_URL",
+    "PORTAL_OIDC_ISSUER_URL",
+    "PORTAL_OIDC_SECRET_ID",
+    "PORTAL_OIDC_ALLOWED_GROUP",
+    "PORTAL_OIDC_GROUPS_CLAIM",
+    "ENABLE_VAULT_DIRECT",
+    "VAULT_ADDR",
+    "VAULT_ROLE_ID_SECRET_ID",
+    "VAULT_SECRET_ID_SECRET_ID",
+    "VAULT_NAMESPACE",
+    "VAULT_APPROLE_AUTH_MOUNT",
+    "VAULT_PKI_MOUNT",
+    "VAULT_LEASE_PREFIX",
+    "VAULT_TIMEOUT_SECONDS",
     "AI_ASSISTANT_PROVIDER",
     "AI_ASSISTANT_MODEL_ID",
     "AI_ASSISTANT_REGION",
@@ -193,5 +475,9 @@ PY
 
 run_ssm "$REMOTE_SCRIPT" 1800
 
-PUBLIC_DNS="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
-echo "Portal URL: http://$PUBLIC_DNS:$PORTAL_PORT"
+if [[ -n "$PORTAL_PUBLIC_URL" ]]; then
+  echo "Portal URL: $PORTAL_PUBLIC_URL"
+else
+  PUBLIC_DNS="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
+  echo "Portal URL: http://$PUBLIC_DNS:$PORTAL_PORT"
+fi

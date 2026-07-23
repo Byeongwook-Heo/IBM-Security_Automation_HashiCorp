@@ -1,15 +1,76 @@
 # Lab Deployment Status
 
-Last updated: 2026-07-23
+Last updated: 2026-07-24
 
 ## Verification Boundary
 
 AWS, SSM, EKS, service endpoints, and the S3 Terraform backend were re-verified
 on 2026-07-14. The final full Terraform plan returned `No changes`.
 
-External-input boundaries remain for full Keycloak OIDC configuration,
-continuous HCP Vault Radar source assignment, and live read-only Vault PKI
-metadata. StackStorm remains disabled and review-only by design.
+The current AWS session expired during the 2026-07-24 release preparation.
+The existing HTTP portal remains live; the new OIDC/HTTPS release is code
+ready and has not been applied. Continuous HCP Vault Radar source credentials
+and approved Alertmanager notification endpoints remain external inputs.
+StackStorm remains disabled and review-only by design.
+
+## 2026-07-24 Release Candidate
+
+Code ready, locally verified, and awaiting a refreshed AWS session:
+
+- Dedicated Portal HTTPS ALB, ACM, Route53, and existing Keycloak ALB HTTPS
+  listener. `security-portal-test-alb` is explicitly rejected.
+- Keycloak confidential client bootstrap with PKCE, exact issuer validation,
+  groups mapper, and Secrets Manager material.
+- oauth2-proxy authentication, forged identity-header removal, secure cookies,
+  and fail-closed backend mutation authentication.
+- Direct Vault metadata from a dedicated read-only AppRole. Vault health,
+  token lookup, mounts, leases, and PKI inventory were verified from the portal
+  EC2 host before credential expiry.
+- Persistent cases, comments, evidence, SLA, audit history, and two-person
+  approval requests backed by a named SQLite volume.
+- Read-only AI evidence tools for Elastic, Vault, Kubernetes, and Prometheus.
+- Continuous Vault Radar manifests, Alertmanager rules/relay, and encrypted
+  backup plus guarded restore scripts.
+- SHA-256 release artifact generation and mandatory remote integrity
+  verification before extraction.
+
+Final local release QA on 2026-07-24:
+
+- 166 Python tests and 9 frontend tests passed.
+- TypeScript production build, Ruff, Bandit, compileall, ShellCheck, Bash
+  syntax checks, Terraform formatting, full lab validation, and independent
+  portal-edge module validation passed.
+- Changed-scope Semgrep ran 607 rules with 0 findings. Full-repository Semgrep
+  retained 7 pre-existing Terraform warnings outside this release scope.
+- Trivy found 0 repository secrets. Its high/critical configuration scan
+  reported one Vault Radar ConfigMap false positive caused by credential
+  environment-variable names in a script that reads values from mounted
+  Secret files, plus one pre-existing unrestricted-egress warning in the
+  already-destroyed cross-namespace SSH CA test module.
+- Desktop and 390x844 mobile browser QA found no document overflow, visual
+  overlap, or console warning/error. Hash routing, Korean/English,
+  light/dark themes, cases, comments, evidence, dry-runs, approval separation,
+  AI evidence, Vault metadata state, and source freshness were exercised.
+- A case-list hydration defect found during browser QA was fixed; comments and
+  evidence now remain present after route changes and telemetry refresh.
+- The packaged runtime and its `.sha256` sidecar were regenerated and the
+  checksum verified successfully. Local Docker image builds remain unverified
+  because the workstation Docker daemon is not running; CI and the remote
+  deployment preflight retain Docker build and configuration checks.
+- A value-redacted STS check returned `ExpiredToken`; no AWS plan, apply, SSM
+  deployment, Keycloak change, or DNS change was attempted.
+
+Deployment entry point:
+
+```bash
+AWS_REGION=ap-northeast-2 \
+ADMIN_CIDR=<operator-public-ip>/32 \
+APPLY=true \
+  scripts/deploy-security-portal-stack.sh
+```
+
+The same script applies only the portal access module, configures Keycloak,
+deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 
 ## Deployed
 
@@ -115,6 +176,12 @@ metadata. StackStorm remains disabled and review-only by design.
 
 - Package portal runtime: `scripts/package-portal-runtime.sh`
 - Deploy portal to Elastic host through SSM: `scripts/deploy-portal-to-elastic-host.sh`
+- Plan/apply the HTTPS/OIDC portal release:
+  `scripts/deploy-security-portal-stack.sh`
+- Configure the Keycloak client and runtime secret:
+  `scripts/configure-security-portal-keycloak.sh`
+- Reconcile the dedicated Vault read-only AppRole:
+  `scripts/prepare-security-portal-vault-readonly.sh`
 - Remote portal deployment template: `scripts/remote-deploy-portal.sh.tmpl`
 - Ingest CloudWatch pgAudit logs into Elastic: `scripts/ingest-cloudwatch-pgaudit-to-elastic.sh`
 - Run Vault Radar folder scan once HCP values are available: `scripts/run-vault-radar-folder-scan.sh`
@@ -137,6 +204,14 @@ metadata. StackStorm remains disabled and review-only by design.
   risk signals: `scripts/run-application-risk-scan.sh`
 - Deploy the EKS application-risk scan CronJob and run a live QA Job:
   `scripts/deploy-application-risk-cronjob.sh`
+- Deploy continuous TFE/S3/EC2-EKS Vault Radar CronJobs:
+  `scripts/deploy-vault-radar-continuous-scan.sh`
+- Deploy Alertmanager rules and notification relay:
+  `scripts/deploy-alertmanager-notifications.sh`
+- Create or validate encrypted continuity backups:
+  `scripts/backup-security-platform.sh`
+- Perform confirmation-gated restore planning or restore:
+  `scripts/restore-security-platform.sh`
 
 ## Vault Radar Status
 

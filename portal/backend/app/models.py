@@ -87,6 +87,14 @@ class AssistantRecommendation(BaseModel):
     action_id: str | None = None
 
 
+class AssistantToolResult(BaseModel):
+    name: Literal["elastic", "vault", "kubernetes", "prometheus"]
+    status: Literal["live", "fallback", "stale", "error"]
+    source: str
+    observed_at: str | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class AssistantChatResponse(BaseModel):
     message_id: str
     answer: str
@@ -96,6 +104,7 @@ class AssistantChatResponse(BaseModel):
     evidence: list[AssistantEvidence] = Field(default_factory=list)
     recommendations: list[AssistantRecommendation] = Field(default_factory=list)
     follow_up_prompts: list[str] = Field(default_factory=list)
+    tool_results: list[AssistantToolResult] = Field(default_factory=list)
     human_review_required: Literal[True] = True
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     notice: str | None = None
@@ -113,3 +122,64 @@ class ObservabilityLinksResponse(BaseModel):
     health_evaluated: Literal[False] = False
     freshness_evaluated: Literal[False] = False
     links: list[ObservabilityLink]
+
+
+class AuthMeResponse(BaseModel):
+    authenticated: bool
+    auth_mode: Literal["deny", "lab", "trusted_headers"]
+    email: str | None = None
+    groups: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+
+
+CaseSeverity = Literal["low", "medium", "high", "critical"]
+CaseStatus = Literal["open", "investigating", "contained", "resolved", "closed"]
+
+
+class CaseCreateRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    description: str = Field(default="", max_length=4000)
+    severity: CaseSeverity = "medium"
+    owner: str | None = Field(default=None, max_length=254)
+    sla_due_at: datetime | None = None
+    source_ref: str | None = Field(default=None, max_length=500)
+
+
+class CaseUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=3, max_length=300)
+    description: str | None = Field(default=None, max_length=4000)
+    severity: CaseSeverity | None = None
+    status: CaseStatus | None = None
+    owner: str | None = Field(default=None, max_length=254)
+    sla_due_at: datetime | None = None
+
+
+class CaseCommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class CaseEvidenceRequest(BaseModel):
+    evidence_type: Literal[
+        "elastic_event",
+        "vault_metadata",
+        "kubernetes_status",
+        "prometheus_status",
+        "manual",
+    ]
+    source: str = Field(min_length=1, max_length=120)
+    reference: str | None = Field(default=None, max_length=500)
+    summary: str = Field(min_length=1, max_length=2000)
+    observed_at: datetime | None = None
+
+
+class AutomationCreateRequest(BaseModel):
+    action_id: str = Field(min_length=3, max_length=80)
+    target_id: str = Field(min_length=1, max_length=300)
+    reason: str = Field(min_length=3, max_length=1000)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    expires_in_seconds: int | None = Field(default=None, ge=300, le=86400)
+
+
+class AutomationApprovalRequest(BaseModel):
+    decision: Literal["approve", "reject"] = "approve"
+    comment: str = Field(default="", max_length=1000)

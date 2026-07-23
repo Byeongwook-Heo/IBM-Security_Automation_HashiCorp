@@ -391,4 +391,243 @@ describe("security portal", () => {
       "page",
     );
   });
+
+  it("shows the authenticated identity and live Vault and freshness provenance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 84, elastic_enabled: true });
+        }
+        if (url.pathname === "/api/auth/me") {
+          return jsonResponse({
+            authenticated: true,
+            auth_mode: "trusted_headers",
+            email: "analyst@example.com",
+            groups: ["SECURITY_ANALYST"],
+            roles: ["SECURITY_ANALYST"],
+          });
+        }
+        if (url.pathname === "/api/vault/metadata") {
+          return jsonResponse({
+            configured: true,
+            status: "live",
+            auth_method: "approle",
+            observed_at: "2026-07-24T00:10:00Z",
+            health: { status: "live", initialized: true, sealed: false, version: "2.0.3+ent" },
+            runtime: {
+              status: "live",
+              mount_count: 18,
+              identity: { ttl_seconds: 900, renewable: true, policy_count: 2 },
+            },
+            pki: {
+              status: "live",
+              certificate_count: 2,
+              issuer_count: 1,
+              role_count: 1,
+            },
+            leases: { status: "live", prefix_configured: true, lease_count: 1 },
+            errors: [],
+          });
+        }
+        if (url.pathname === "/api/data-sources/freshness") {
+          return jsonResponse({
+            generated_at: "2026-07-24T00:10:00Z",
+            sources: [
+              {
+                id: "vault",
+                status: "live",
+                observed_at: "2026-07-24T00:09:55Z",
+                age_seconds: 5,
+                threshold_seconds: 300,
+                provenance: { source: "vault-api", mode: "read-only" },
+                details: { connection_status: "live" },
+              },
+            ],
+          });
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") return jsonResponse({});
+        return jsonResponse([]);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("analyst@example.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Data Security" }));
+    expect(await screen.findByRole("heading", { name: "Direct Vault connection" })).toBeInTheDocument();
+    expect(screen.getByText("Unsealed")).toBeInTheDocument();
+    expect(screen.getByText("2 certificates")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "System Health" }));
+    expect(await screen.findByRole("heading", { name: "Data trust and freshness" })).toBeInTheDocument();
+    expect(screen.getByText("vault-api · Read Only")).toBeInTheDocument();
+    expect(screen.getByText("5s old")).toBeInTheDocument();
+  });
+
+  it("creates a managed investigation case from the routed Cases workspace", async () => {
+    let caseRequest: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (init?.method === "POST" && url.pathname === "/api/cases") {
+          caseRequest = JSON.parse(String(init.body));
+          return jsonResponse({
+            id: "case-created",
+            title: "Investigate exposed deployment token",
+            description: "Validate ownership and rotate after review.",
+            severity: "critical",
+            status: "open",
+            owner: "analyst@example.com",
+            sla_due_at: "2026-07-25T00:00:00Z",
+            sla_status: "on_track",
+            source_ref: "vr-1",
+            created_by: "analyst@example.com",
+            created_at: "2026-07-24T00:00:00Z",
+            updated_at: "2026-07-24T00:00:00Z",
+            comments: [],
+            evidence: [],
+          }, 201);
+        }
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 80, elastic_enabled: false });
+        }
+        if (url.pathname === "/api/auth/me") {
+          return jsonResponse({
+            authenticated: true,
+            auth_mode: "trusted_headers",
+            email: "analyst@example.com",
+            groups: ["SECURITY_ANALYST"],
+            roles: ["SECURITY_ANALYST"],
+          });
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") return jsonResponse({});
+        return jsonResponse([]);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Cases" }));
+    fireEvent.click(screen.getByRole("button", { name: "New case" }));
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Investigate exposed deployment token" },
+    });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Validate ownership and rotate after review." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create case" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Investigate exposed deployment token" }),
+    ).toBeInTheDocument();
+    expect(caseRequest).toMatchObject({
+      title: "Investigate exposed deployment token",
+      description: "Validate ownership and rotate after review.",
+      severity: "critical",
+      owner: "analyst@example.com",
+      source_ref: "vr-1",
+    });
+  });
+
+  it("records the first approval and requires a different second reviewer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (
+          init?.method === "POST" &&
+          url.pathname === "/api/automation/requests/automation-1/approvals"
+        ) {
+          return jsonResponse({
+            id: "automation-1",
+            action_id: "rescan",
+            target_id: "vault-radar-approved-sources",
+            reason: "Analyst review",
+            requester: "requester@example.com",
+            status: "pending_second_approval",
+            created_at: "2026-07-24T00:00:00Z",
+            expires_at: "2026-07-24T01:00:00Z",
+            first_approver: "analyst@example.com",
+            first_approved_at: "2026-07-24T00:05:00Z",
+            approval_count: 1,
+            execution_enabled: false,
+          });
+        }
+        if (url.pathname === "/api/dashboard/summary") {
+          return jsonResponse({ security_score: 80, elastic_enabled: false });
+        }
+        if (url.pathname === "/api/auth/me") {
+          return jsonResponse({
+            authenticated: true,
+            auth_mode: "trusted_headers",
+            email: "analyst@example.com",
+            groups: ["SECURITY_ANALYST"],
+            roles: ["SECURITY_ANALYST"],
+          });
+        }
+        if (url.pathname === "/api/automation/requests") {
+          return jsonResponse([
+            {
+              id: "automation-1",
+              action_id: "rescan",
+              target_id: "vault-radar-approved-sources",
+              reason: "Analyst review",
+              requester: "requester@example.com",
+              status: "pending_first_approval",
+              created_at: "2026-07-24T00:00:00Z",
+              expires_at: "2026-07-24T01:00:00Z",
+              approval_count: 0,
+              execution_enabled: false,
+            },
+          ]);
+        }
+        if (url.pathname === "/api/application-risk/summary") {
+          return jsonResponse({ score: 0, sources: [], top_applications: [] });
+        }
+        if (url.pathname === "/api/kubernetes/platform") {
+          return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+        }
+        if (url.pathname === "/api/kubernetes/cost-summary") {
+          return jsonResponse({ provider: "OpenCost" });
+        }
+        if (url.pathname === "/api/enterprise/status") return jsonResponse({});
+        return jsonResponse([]);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: /^Automation/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("1/2 approvals")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Approve" })).toHaveAttribute(
+      "title",
+      "A different reviewer must provide the second approval.",
+    );
+  });
 });

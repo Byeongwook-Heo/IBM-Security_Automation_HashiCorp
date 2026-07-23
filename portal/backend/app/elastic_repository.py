@@ -476,7 +476,8 @@ class ElasticRepository:
 
         try:
             # The configured base URL is restricted to credential-free HTTP(S).
-            with request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            with request.urlopen(  # nosec B310
                 req, timeout=self.timeout_seconds, context=context
             ) as response:
                 return json.loads(response.read().decode("utf-8"))

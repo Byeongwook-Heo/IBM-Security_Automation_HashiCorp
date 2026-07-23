@@ -27,7 +27,7 @@ Heavy IBM components are represented by lighter open source or self-managed equi
 
 Status terms in this document are deliberate:
 
-- **Live** means the AWS/EKS runtime was verified on 2026-07-14.
+- **Live** means the AWS/EKS runtime was verified through 2026-07-24.
 - **Code ready** means implementation and local QA passed, but the current AWS
   runtime has not been reconciled with that code.
 - **External input** means a token, product-side source assignment, or explicit
@@ -68,7 +68,9 @@ the portal exposes current DB and Vault audit events.
 
 Status: the HCP agent and one-off local/AWS inventory scans are verified. The
 latest AWS scan covered 26 EC2 instances and one EKS cluster and indexed 16
-findings. Continuous HCP source assignment for TFE/S3 remains external.
+findings. Digest-pinned continuous TFE, S3, and EC2/EKS inventory CronJobs,
+restricted RBAC, and NetworkPolicy are code ready. HCP source credentials and
+the production image digest remain external inputs.
 
 - Connect Vault Radar to Git, Terraform Enterprise, S3, or local source targets.
 - Ingest Secret and PII findings into the portal.
@@ -86,7 +88,9 @@ findings. Continuous HCP source assignment for TFE/S3 remains external.
 ### Phase 4: Observability
 
 Status: live. The hardened Prometheus/Grafana/Loki/Tempo/OTel Compose runtime
-and EKS Prometheus/Blackbox monitoring passed live health checks.
+and EKS Prometheus/Blackbox monitoring passed live health checks. Alertmanager
+rules, notification relay, and deployment validation are code ready and await
+approved notification endpoints.
 
 - Deploy Prometheus, Grafana, OpenTelemetry Collector, Loki, Tempo, and Alertmanager.
 - Feed service health, logs, traces, and alerts into the portal.
@@ -121,7 +125,8 @@ Status: live for Trivy/Syft/Semgrep/Polaris collection and portal scoring. The
 expanded scan indexed 202 signals, and a digest-pinned EKS CronJob runs the
 Trivy/Semgrep/Syft baseline every six hours with stable duplicate suppression.
 The portal reported 215 total signals and a 75/100 score at final verification.
-Live Vault PKI input remains external.
+Direct read-only Vault PKI connectivity and a dedicated short-lived AppRole
+were verified on 2026-07-24. The refreshed portal release is not yet deployed.
 
 - Collect Trivy, Grype, Syft, Semgrep, kube-bench, Polaris, certificate, backup, and resilience results.
 - Build an application risk score in the Information Security Portal.
@@ -141,8 +146,10 @@ Live Vault PKI input remains external.
 
 Status: Argo Workflows/Events and KEDA are live. StackStorm has
 a disabled-by-default private EC2 review-host module and a staged pack, but no
-StackStorm software is automatically installed. Every portal action remains
-dry-run and execution-blocked.
+StackStorm software is automatically installed. Persistent case management,
+evidence, audit history, and requester-plus-two-distinct-approver automation
+are code ready. Every dispatcher remains plan-only and execution-disabled by
+default.
 
 - Add Argo Workflows/Events or StackStorm for guided remediation.
 - Expose approved actions through the portal.
@@ -168,9 +175,12 @@ branch/commit/push is handled separately from AWS deployment.
 
 - Provide the TFE organization/token and trusted CA material for the Radar TFE
   variable scan, and approve S3 read permissions/source assignment.
-- Provide a Keycloak realm/client configuration before enabling full portal
-  OIDC authentication. The deployment default otherwise fails closed.
-- Supply a read-only Vault token/export for live Vault PKI certificate status.
+- Refresh the expired AWS session, review the dedicated portal-edge Terraform
+  plan, then run `scripts/deploy-security-portal-stack.sh` with `APPLY=true`.
+- Assign approved Keycloak users to the automatically created
+  `SECURITY_ANALYST` group. Client, mapper, PKCE, and secret setup are scripted.
+- Supply approved Alertmanager notification destinations and the digest-pinned
+  Vault Radar image before applying those optional continuous workloads.
 
 ## Branching
 

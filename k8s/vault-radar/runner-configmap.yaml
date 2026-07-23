@@ -1,0 +1,286 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-radar-continuous-scan-runner
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: vault-radar-continuous-scan
+    app.kubernetes.io/component: scanner
+data:
+  run-scan.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+
+    work_dir="/work"
+    report_file="$work_dir/report.json"
+    scan_log="$work_dir/scan.log"
+    metrics_file="$work_dir/metrics.prom"
+    inventory_dir="$work_dir/inventory"
+    started_at="$(date +%s)"
+    scan_rc=1
+    finding_count=-1
+
+    cleanup() {
+      find "$work_dir" -mindepth 1 -type f -exec rm -f {} \; 2>/dev/null || true
+      find "$work_dir" -mindepth 1 -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    }
+    trap cleanup EXIT
+    trap 'exit 143' HUP INT TERM
+
+    required_file() {
+      if [[ ! -s "$1" ]]; then
+        echo "required credential file is missing: $1" >&2
+        exit 64
+      fi
+    }
+
+    required_command() {
+      if ! command -v "$1" >/dev/null 2>&1; then
+        echo "required runtime command is unavailable: $1" >&2
+        exit 69
+      fi
+    }
+
+    required_command vault-radar
+    required_command curl
+    required_command jq
+
+    case "${SCAN_SOURCE:-}" in
+      tfe|s3|ec2-eks) ;;
+      *)
+        echo "SCAN_SOURCE must be tfe, s3, or ec2-eks" >&2
+        exit 64
+        ;;
+    esac
+
+    if [[ ! "${STALE_AFTER_SECONDS:-}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "STALE_AFTER_SECONDS must be a positive integer" >&2
+      exit 64
+    fi
+    if [[ ! "${PUSHGATEWAY_URL:-}" =~ ^https?://[^/@[:space:]]+(:[0-9]+)?$ ]]; then
+      echo "PUSHGATEWAY_URL must be a credential-free HTTP(S) origin" >&2
+      exit 64
+    fi
+
+    required_file /var/run/vault-radar/hcp-project-id
+    required_file /var/run/vault-radar/hcp-client-id
+    required_file /var/run/vault-radar/hcp-client-secret
+    required_file /var/run/vault-radar/vault-radar.hclic
+
+    export HCP_PROJECT_ID
+    export HCP_CLIENT_ID
+    export HCP_CLIENT_SECRET
+    export VAULT_RADAR_LICENSE_PATH=/var/run/vault-radar/vault-radar.hclic
+    HCP_PROJECT_ID="$(< /var/run/vault-radar/hcp-project-id)"
+    HCP_CLIENT_ID="$(< /var/run/vault-radar/hcp-client-id)"
+    HCP_CLIENT_SECRET="$(< /var/run/vault-radar/hcp-client-secret)"
+
+    mkdir -p "$work_dir"
+
+    limit_args=()
+    if [[ -n "${SCAN_LIMIT:-}" ]]; then
+      if [[ ! "$SCAN_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+        echo "SCAN_LIMIT must be empty or a positive integer" >&2
+        exit 64
+      fi
+      limit_args=(--limit "$SCAN_LIMIT")
+    fi
+
+    set +e
+    case "$SCAN_SOURCE" in
+      tfe)
+        required_file /var/run/vault-radar/tfe-token
+        if [[ ! "${TFE_ADDRESS:-}" =~ ^https://[^/@[:space:]]+$ ]]; then
+          echo "TFE_ADDRESS must be a credential-free HTTPS URL" >&2
+          exit 64
+        fi
+        if [[ -z "${TFE_ORG_NAME:-}" ]]; then
+          echo "TFE_ORG_NAME is required" >&2
+          exit 64
+        fi
+        export TFE_TOKEN
+        TFE_TOKEN="$(< /var/run/vault-radar/tfe-token)"
+        if [[ -s /var/run/vault-radar/tfe-ca.crt ]]; then
+          export SSL_CERT_FILE=/var/run/vault-radar/tfe-ca.crt
+          curl --fail --silent --show-error --max-time 20 \
+            --cacert "$SSL_CERT_FILE" \
+            "${TFE_ADDRESS%/}/api/v1/health/readiness" >/dev/null 2>&1
+        else
+          curl --fail --silent --show-error --max-time 20 \
+            "${TFE_ADDRESS%/}/api/v1/health/readiness" >/dev/null 2>&1
+        fi
+        if [[ "$?" -eq 0 ]]; then
+          vault-radar scan tfe-variables \
+            --org "$TFE_ORG_NAME" \
+            --outfile "$report_file" \
+            --format json \
+            --disable-ui \
+            --skip-activeness \
+            "${limit_args[@]}" >"$scan_log" 2>&1
+          scan_rc=$?
+        else
+          scan_rc=68
+        fi
+        unset TFE_TOKEN
+        ;;
+      s3)
+        required_command aws
+        if [[ -z "${S3_BUCKET:-}" || ! "$S3_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+          echo "S3_BUCKET must be a valid bucket name" >&2
+          exit 64
+        fi
+        aws sts get-caller-identity >/dev/null 2>&1
+        if [[ "$?" -eq 0 ]]; then
+          vault-radar scan aws-s3 \
+            --bucket "$S3_BUCKET" \
+            --region "$AWS_REGION" \
+            --outfile "$report_file" \
+            --format json \
+            --disable-ui \
+            --skip-activeness \
+            "${limit_args[@]}" >"$scan_log" 2>&1
+          scan_rc=$?
+        else
+          scan_rc=67
+        fi
+        ;;
+      ec2-eks)
+        required_command aws
+        mkdir -p "$inventory_dir/ec2" "$inventory_dir/eks"
+        aws sts get-caller-identity >/dev/null 2>&1
+        inventory_rc=$?
+        if [[ "$inventory_rc" -eq 0 ]]; then
+          aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters Name=instance-state-name,Values=pending,running,stopping,stopped \
+            >"$inventory_dir/ec2/instances.json" 2>"$scan_log"
+          inventory_rc=$?
+        fi
+        if [[ "$inventory_rc" -eq 0 ]]; then
+          image_ids=()
+          while IFS= read -r image_id; do
+            [[ -n "$image_id" ]] && image_ids+=("$image_id")
+          done < <(jq -r '[.Reservations[].Instances[].ImageId // empty] | unique | .[]' \
+            "$inventory_dir/ec2/instances.json")
+          if [[ "${#image_ids[@]}" -gt 0 ]]; then
+            aws ec2 describe-images \
+              --region "$AWS_REGION" \
+              --image-ids "${image_ids[@]}" \
+              >"$inventory_dir/ec2/images.json" 2>>"$scan_log"
+            inventory_rc=$?
+          else
+            printf '{"Images":[]}\n' >"$inventory_dir/ec2/images.json"
+          fi
+        fi
+        if [[ "$inventory_rc" -eq 0 ]]; then
+          aws eks list-clusters --region "$AWS_REGION" \
+            >"$inventory_dir/eks/clusters.json" 2>>"$scan_log"
+          inventory_rc=$?
+        fi
+        if [[ "$inventory_rc" -eq 0 ]]; then
+          while IFS= read -r cluster_name; do
+            [[ -z "$cluster_name" ]] && continue
+            safe_name="$(printf '%s' "$cluster_name" | tr -c 'A-Za-z0-9_.-' '_')"
+            cluster_dir="$inventory_dir/eks/$safe_name"
+            mkdir -p "$cluster_dir"
+            aws eks describe-cluster \
+              --region "$AWS_REGION" \
+              --name "$cluster_name" \
+              >"$cluster_dir/cluster.json" 2>>"$scan_log" || inventory_rc=$?
+            aws eks list-nodegroups \
+              --region "$AWS_REGION" \
+              --cluster-name "$cluster_name" \
+              >"$cluster_dir/nodegroups.json" 2>>"$scan_log" || inventory_rc=$?
+            aws eks list-fargate-profiles \
+              --region "$AWS_REGION" \
+              --cluster-name "$cluster_name" \
+              >"$cluster_dir/fargate-profiles.json" 2>>"$scan_log" || inventory_rc=$?
+            aws eks list-addons \
+              --region "$AWS_REGION" \
+              --cluster-name "$cluster_name" \
+              >"$cluster_dir/addons.json" 2>>"$scan_log" || inventory_rc=$?
+          done < <(jq -r '.clusters[]? // empty' "$inventory_dir/eks/clusters.json")
+        fi
+        if [[ "$inventory_rc" -eq 0 ]]; then
+          vault-radar scan folder \
+            --path "$inventory_dir" \
+            --outfile "$report_file" \
+            --format json \
+            --host-name ec2-eks-lab-inventory \
+            --path-prefix ec2-eks-lab-inventory \
+            --disable-ui \
+            --skip-activeness \
+            "${limit_args[@]}" >"$scan_log" 2>&1
+          scan_rc=$?
+        else
+          scan_rc="$inventory_rc"
+        fi
+        ;;
+    esac
+    set -e
+
+    if [[ "$scan_rc" -eq 0 ]]; then
+      if [[ ! -s "$report_file" ]]; then
+        scan_rc=65
+      else
+        finding_count="$(
+          jq -r '
+            if type == "array" then length
+            elif type == "object" then
+              ([to_entries[] | select(.value | type == "array") | .value | length] | add // 0)
+            else 0
+            end
+          ' "$report_file" 2>/dev/null || printf '%s' -1
+        )"
+        if [[ ! "$finding_count" =~ ^[0-9]+$ ]]; then
+          finding_count=-1
+          scan_rc=65
+        fi
+      fi
+    fi
+
+    finished_at="$(date +%s)"
+    duration="$((finished_at - started_at))"
+    success=0
+    [[ "$scan_rc" -eq 0 ]] && success=1
+
+    {
+      printf '# TYPE vault_radar_scan_success gauge\n'
+      printf 'vault_radar_scan_success{source="%s"} %s\n' "$SCAN_SOURCE" "$success"
+      printf '# TYPE vault_radar_scan_last_run_timestamp_seconds gauge\n'
+      printf 'vault_radar_scan_last_run_timestamp_seconds{source="%s"} %s\n' "$SCAN_SOURCE" "$finished_at"
+      printf '# TYPE vault_radar_scan_duration_seconds gauge\n'
+      printf 'vault_radar_scan_duration_seconds{source="%s"} %s\n' "$SCAN_SOURCE" "$duration"
+      printf '# TYPE vault_radar_scan_findings gauge\n'
+      printf 'vault_radar_scan_findings{source="%s"} %s\n' "$SCAN_SOURCE" "$finding_count"
+      printf '# TYPE vault_radar_scan_stale_after_seconds gauge\n'
+      printf 'vault_radar_scan_stale_after_seconds{source="%s"} %s\n' \
+        "$SCAN_SOURCE" "$STALE_AFTER_SECONDS"
+      if [[ "$success" -eq 1 ]]; then
+        printf '# TYPE vault_radar_scan_last_success_timestamp_seconds gauge\n'
+        printf 'vault_radar_scan_last_success_timestamp_seconds{source="%s"} %s\n' \
+          "$SCAN_SOURCE" "$finished_at"
+      fi
+    } >"$metrics_file"
+
+    push_rc=0
+    curl --fail --silent --show-error --max-time 15 \
+      --request POST \
+      --data-binary "@$metrics_file" \
+      "${PUSHGATEWAY_URL%/}/metrics/job/vault-radar-continuous-scan/source/$SCAN_SOURCE" \
+      >/dev/null 2>&1 || push_rc=$?
+
+    cleanup
+    trap - EXIT HUP INT TERM
+
+    if [[ "$scan_rc" -ne 0 ]]; then
+      echo "Vault Radar scan failed; source=$SCAN_SOURCE exit_code=$scan_rc" >&2
+      exit "$scan_rc"
+    fi
+    if [[ "$push_rc" -ne 0 ]]; then
+      echo "Vault Radar scan completed but metrics delivery failed; source=$SCAN_SOURCE" >&2
+      exit 70
+    fi
+    printf '{"source":"%s","success":true,"finding_count":%s,"raw_result_retained":false}\n' \
+      "$SCAN_SOURCE" "$finding_count"

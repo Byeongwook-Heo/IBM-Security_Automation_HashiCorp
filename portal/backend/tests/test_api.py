@@ -18,7 +18,15 @@ client = TestClient(app)
 def mock_mode(monkeypatch):
     monkeypatch.setenv("PORTAL_AUTH_MODE", "lab")
     monkeypatch.setenv("PORTAL_ALLOW_INSECURE_LAB_AUTH", "true")
-    for variable in ("GRAFANA_URL", "LOKI_URL", "TEMPO_URL", "PROMETHEUS_URL"):
+    for variable in (
+        "GRAFANA_URL",
+        "LOKI_URL",
+        "TEMPO_URL",
+        "PROMETHEUS_URL",
+        "KUBERNETES_API_URL",
+        "KUBERNETES_SERVICE_HOST",
+        "VAULT_ADDR",
+    ):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "evidence")
     monkeypatch.delenv("AI_ASSISTANT_MODEL_ID", raising=False)

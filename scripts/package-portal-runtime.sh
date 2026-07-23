@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORTAL_DIR="$ROOT_DIR/portal"
 BUILD_DIR="$PORTAL_DIR/build/security-portal-runtime"
 ARTIFACT_PATH="$PORTAL_DIR/build/security-portal-runtime.tar.gz"
+CHECKSUM_PATH="$ARTIFACT_PATH.sha256"
 FRONTEND_BUILD_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -36,4 +37,14 @@ cp "$PORTAL_DIR/deploy/filebeat.yml" "$BUILD_DIR/filebeat.yml"
 cp "$PORTAL_DIR/deploy/nginx.conf" "$BUILD_DIR/nginx.conf"
 
 COPYFILE_DISABLE=1 tar --no-xattrs -C "$BUILD_DIR" -czf "$ARTIFACT_PATH" .
+python3 - "$ARTIFACT_PATH" "$CHECKSUM_PATH" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import sys
+
+artifact = Path(sys.argv[1])
+checksum_path = Path(sys.argv[2])
+digest = sha256(artifact.read_bytes()).hexdigest()
+checksum_path.write_text(f"{digest}  {artifact.name}\n", encoding="ascii")
+PY
 printf '%s\n' "$ARTIFACT_PATH"

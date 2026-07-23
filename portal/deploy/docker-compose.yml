@@ -4,6 +4,27 @@ services:
     restart: unless-stopped
     env_file: ./backend.env
     network_mode: host
+    volumes:
+      - portal-backend-data:/var/lib/security-portal
+
+  oauth2-proxy:
+    profiles: ["oidc"]
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3
+    restart: unless-stopped
+    user: "65532:65532"
+    env_file: ./oauth2-proxy.env
+    expose:
+      - "4180"
+    volumes:
+      - ./secrets/oidc-client-secret:/run/secrets/oidc-client-secret:ro
+      - ./secrets/oidc-cookie-secret:/run/secrets/oidc-cookie-secret:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   frontend:
     image: nginx:1.27-alpine
@@ -31,4 +52,5 @@ services:
       - filebeat-data:/usr/share/filebeat/data
 
 volumes:
+  portal-backend-data:
   filebeat-data:

@@ -1,0 +1,463 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager-notification-relay
+  namespace: security-lab
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-notification-relay
+  namespace: security-lab
+data:
+  relay.py: |
+    from __future__ import annotations
+
+    import json
+    import os
+    import smtplib
+    import ssl
+    import threading
+    import urllib.parse
+    import urllib.request
+    from email.message import EmailMessage
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from typing import Any
+
+
+    SECRET_DIR = Path("/var/run/notification-secrets")
+    ENABLED = {
+        item.strip()
+        for item in os.environ.get("ENABLED_CHANNELS", "").split(",")
+        if item.strip()
+    }
+    ALLOWED_CHANNELS = {"webhook", "teams", "email"}
+    COUNTERS = {"attempts": 0, "failures": 0, "delivered": 0}
+    COUNTER_LOCK = threading.Lock()
+
+
+    def secret(name: str) -> str:
+        path = SECRET_DIR / name
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8").strip()
+
+
+    def valid_https_url(value: str) -> bool:
+        try:
+            parsed = urllib.parse.urlsplit(value)
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+        )
+
+
+    def configured_channels() -> set[str]:
+        configured: set[str] = set()
+        if "webhook" in ENABLED and valid_https_url(secret("webhook-url")):
+            configured.add("webhook")
+        if "teams" in ENABLED and valid_https_url(secret("teams-webhook-url")):
+            configured.add("teams")
+        email_fields = (
+            "smtp-host",
+            "smtp-port",
+            "smtp-username",
+            "smtp-password",
+            "email-from",
+            "email-to",
+            "smtp-tls-mode",
+        )
+        if "email" in ENABLED and all(secret(field) for field in email_fields):
+            recipients = [
+                item.strip()
+                for item in secret("email-to").split(",")
+                if item.strip() and "\n" not in item and "\r" not in item
+            ]
+            if (
+                secret("smtp-port") in {"465", "587"}
+                and secret("smtp-tls-mode") in {"ssl", "starttls"}
+                and recipients
+                and "\n" not in secret("email-from")
+                and "\r" not in secret("email-from")
+            ):
+                configured.add("email")
+        return configured
+
+
+    def safe_text(value: Any, limit: int = 240) -> str:
+        return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())[:limit]
+
+
+    def sanitized_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        alerts = []
+        for raw in payload.get("alerts", []):
+            labels = raw.get("labels") or {}
+            annotations = raw.get("annotations") or {}
+            alerts.append(
+                {
+                    "status": safe_text(raw.get("status"), 20),
+                    "labels": {
+                        key: safe_text(labels.get(key), 160)
+                        for key in ("alertname", "severity", "service", "source", "namespace", "job")
+                        if labels.get(key) is not None
+                    },
+                    "summary": safe_text(annotations.get("summary")),
+                    "startsAt": safe_text(raw.get("startsAt"), 64),
+                    "endsAt": safe_text(raw.get("endsAt"), 64),
+                }
+            )
+        return {
+            "receiver": safe_text(payload.get("receiver"), 80),
+            "status": safe_text(payload.get("status"), 20),
+            "alerts": alerts[:50],
+            "truncated": len(alerts) > 50,
+        }
+
+
+    def post_json(url: str, payload: dict[str, Any]) -> None:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload, separators=(",", ":")).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "security-platform-alert-relay/1",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"notification endpoint returned HTTP {response.status}")
+
+
+    def send_webhook(payload: dict[str, Any]) -> None:
+        post_json(secret("webhook-url"), payload)
+
+
+    def send_teams(payload: dict[str, Any]) -> None:
+        alerts = payload.get("alerts") or []
+        lines = [
+            f"- {item.get('labels', {}).get('alertname', 'Alert')}: {item.get('summary', '')}"
+            for item in alerts[:10]
+        ]
+        teams_payload = {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "Security platform alert",
+            "themeColor": "C23934" if payload.get("status") == "firing" else "2D7D46",
+            "title": f"Security platform alerts: {safe_text(payload.get('status'), 20)}",
+            "text": "\n".join(lines) or "Alert state changed.",
+        }
+        post_json(secret("teams-webhook-url"), teams_payload)
+
+
+    def send_email(payload: dict[str, Any]) -> None:
+        port_text = secret("smtp-port")
+        if port_text not in {"465", "587"}:
+            raise RuntimeError("smtp-port must be 465 or 587")
+        tls_mode = secret("smtp-tls-mode")
+        if tls_mode not in {"ssl", "starttls"}:
+            raise RuntimeError("smtp-tls-mode must be ssl or starttls")
+        recipients = [
+            item.strip()
+            for item in secret("email-to").split(",")
+            if item.strip() and "\n" not in item and "\r" not in item
+        ]
+        if not recipients:
+            raise RuntimeError("email-to has no valid recipients")
+
+        alerts = payload.get("alerts") or []
+        message = EmailMessage()
+        message["From"] = secret("email-from")
+        message["To"] = ", ".join(recipients)
+        message["Subject"] = f"[Security Platform] {safe_text(payload.get('status'), 20)} alerts"
+        message.set_content(
+            "\n".join(
+                f"{item.get('labels', {}).get('alertname', 'Alert')}: {item.get('summary', '')}"
+                for item in alerts[:50]
+            )
+            or "Alert state changed."
+        )
+
+        host = secret("smtp-host")
+        port = int(port_text)
+        context = ssl.create_default_context()
+        if tls_mode == "ssl":
+            with smtplib.SMTP_SSL(host, port, timeout=15, context=context) as client:
+                client.login(secret("smtp-username"), secret("smtp-password"))
+                client.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as client:
+                client.ehlo()
+                client.starttls(context=context)
+                client.ehlo()
+                client.login(secret("smtp-username"), secret("smtp-password"))
+                client.send_message(message)
+
+
+    def metric_text() -> str:
+        configured = configured_channels()
+        with COUNTER_LOCK:
+            attempts = COUNTERS["attempts"]
+            failures = COUNTERS["failures"]
+            delivered = COUNTERS["delivered"]
+        lines = [
+            "# TYPE alertmanager_notification_relay_configured_channels gauge",
+            f"alertmanager_notification_relay_configured_channels {len(configured)}",
+            "# TYPE alertmanager_notification_relay_attempts_total counter",
+            f"alertmanager_notification_relay_attempts_total {attempts}",
+            "# TYPE alertmanager_notification_relay_failures_total counter",
+            f"alertmanager_notification_relay_failures_total {failures}",
+            "# TYPE alertmanager_notification_relay_delivered_total counter",
+            f"alertmanager_notification_relay_delivered_total {delivered}",
+        ]
+        for channel in sorted(ALLOWED_CHANNELS):
+            lines.append(
+                'alertmanager_notification_relay_channel_configured'
+                f'{{channel="{channel}"}} {1 if channel in configured else 0}'
+            )
+        return "\n".join(lines) + "\n"
+
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "SecurityAlertRelay/1"
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            return
+
+        def response(self, status: int, body: bytes, content_type: str = "application/json") -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path == "/live":
+                self.response(200, b'{"status":"ok"}')
+                return
+            if self.path == "/ready":
+                configured = configured_channels()
+                ready = not ENABLED or configured == ENABLED
+                body = json.dumps(
+                    {
+                        "ready": ready,
+                        "configured_channel_count": len(configured),
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                self.response(200 if ready else 503, body)
+                return
+            if self.path == "/metrics":
+                self.response(200, metric_text().encode(), "text/plain; version=0.0.4")
+                return
+            self.response(404, b'{"error":"not found"}')
+
+        def do_POST(self) -> None:
+            if self.path != "/alerts":
+                self.response(404, b'{"error":"not found"}')
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 1_048_576:
+                self.response(413, b'{"error":"invalid payload size"}')
+                return
+            try:
+                raw = json.loads(self.rfile.read(length))
+                if not isinstance(raw, dict):
+                    raise ValueError("payload must be an object")
+                payload = sanitized_payload(raw)
+            except (json.JSONDecodeError, ValueError):
+                self.response(400, b'{"error":"invalid payload"}')
+                return
+
+            channels = configured_channels()
+            if not channels:
+                with COUNTER_LOCK:
+                    COUNTERS["failures"] += 1
+                self.response(503, b'{"error":"no notification channel configured"}')
+                return
+
+            senders = {"webhook": send_webhook, "teams": send_teams, "email": send_email}
+            failed = []
+            for channel in sorted(channels):
+                with COUNTER_LOCK:
+                    COUNTERS["attempts"] += 1
+                try:
+                    senders[channel](payload)
+                    with COUNTER_LOCK:
+                        COUNTERS["delivered"] += 1
+                except Exception:
+                    failed.append(channel)
+                    with COUNTER_LOCK:
+                        COUNTERS["failures"] += 1
+            if failed:
+                self.response(502, json.dumps({"failed_channels": failed}).encode())
+                return
+            self.response(202, b'{"accepted":true}')
+
+
+    if __name__ == "__main__":
+        unknown = ENABLED - ALLOWED_CHANNELS
+        if unknown:
+            raise SystemExit("unsupported notification channel configured")
+        ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-notification-relay
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: alertmanager-notification-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager-notification-relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager-notification-relay
+    spec:
+      serviceAccountName: alertmanager-notification-relay
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: public.ecr.aws/docker/library/python:3.13.5-alpine3.22@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/opt/relay/relay.py"]
+          env:
+            - name: ENABLED_CHANNELS
+              valueFrom:
+                configMapKeyRef:
+                  name: alertmanager-notification-settings
+                  key: enabled-channels
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: script
+              mountPath: /opt/relay
+              readOnly: true
+            - name: notification-secrets
+              mountPath: /var/run/notification-secrets
+              readOnly: true
+            - name: runtime
+              mountPath: /tmp
+      volumes:
+        - name: script
+          configMap:
+            name: alertmanager-notification-relay
+            defaultMode: 0550
+        - name: notification-secrets
+          secret:
+            secretName: alertmanager-notification-secrets
+            optional: true
+            defaultMode: 0440
+        - name: runtime
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-notification-relay
+  namespace: security-lab
+  labels:
+    app.kubernetes.io/name: alertmanager-notification-relay
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alertmanager-notification-relay
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-notification-relay
+  namespace: security-lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager-notification-relay
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: security-lab
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587

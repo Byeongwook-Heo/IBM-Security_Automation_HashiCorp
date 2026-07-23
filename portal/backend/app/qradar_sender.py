@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import json, socket
+import socket
+
 from .models import CommonEvent
 
 def to_json_syslog(event: CommonEvent) -> str:

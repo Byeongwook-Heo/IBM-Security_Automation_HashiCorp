@@ -4,7 +4,10 @@ import {
   Activity,
   ArrowRight,
   Bot,
+  BriefcaseBusiness,
+  Check,
   CircleAlert,
+  Clock3,
   Database,
   ExternalLink,
   FileBadge2,
@@ -16,6 +19,7 @@ import {
   Moon,
   Network,
   Package,
+  Plus,
   Radar,
   RefreshCw,
   Search,
@@ -32,8 +36,7 @@ import {
 import { PreferencesProvider, usePreferences } from "./i18n";
 import "./style.css";
 
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 type ApiKey =
   | "summary"
@@ -50,7 +53,12 @@ type ApiKey =
   | "kubernetesPlatform"
   | "kubernetesCostSummary"
   | "kubernetesOptimization"
-  | "dryRunActions";
+  | "dryRunActions"
+  | "authMe"
+  | "vaultMetadata"
+  | "dataSourceFreshness"
+  | "cases"
+  | "automationRequests";
 
 type EndpointState = {
   key: ApiKey;
@@ -212,6 +220,117 @@ type DryRunTarget = {
   reason?: string;
 };
 
+type AuthIdentity = {
+  authenticated: boolean;
+  authMode: "deny" | "lab" | "trusted_headers";
+  email: string;
+  groups: string[];
+  roles: string[];
+};
+
+type VaultMetadata = {
+  configured: boolean;
+  status: string;
+  authMethod: string;
+  observedAt: string;
+  health: {
+    status: string;
+    initialized?: boolean;
+    sealed?: boolean;
+    standby?: boolean;
+    version?: string;
+    clusterName?: string;
+  };
+  runtime: {
+    status: string;
+    mountCount?: number;
+    pkiMountConfigured?: boolean;
+    identity?: {
+      ttlSeconds?: number;
+      renewable?: boolean;
+      policyCount?: number;
+    };
+  };
+  pki: {
+    status: string;
+    mount?: string;
+    certificateCount?: number;
+    issuerCount?: number;
+    roleCount?: number;
+    defaultIssuer?: string;
+  };
+  leases: {
+    status: string;
+    prefixConfigured?: boolean;
+    leaseCount?: number;
+  };
+  errors: Array<{ component?: string; code?: string; message?: string }>;
+};
+
+type FreshnessSource = {
+  id: string;
+  status: "live" | "stale" | "fallback" | "error";
+  observedAt: string;
+  ageSeconds?: number;
+  thresholdSeconds: number;
+  provenanceSource: string;
+  provenanceMode: string;
+  connectionStatus: string;
+};
+
+type CaseComment = {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+};
+
+type CaseEvidence = {
+  id: string;
+  evidenceType: string;
+  source: string;
+  reference: string;
+  summary: string;
+  observedAt: string;
+  addedBy: string;
+  createdAt: string;
+};
+
+type ManagedCase = {
+  id: string;
+  title: string;
+  description: string;
+  severity: string;
+  status: string;
+  owner: string;
+  slaDueAt: string;
+  slaStatus: string;
+  sourceRef: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  comments: CaseComment[];
+  evidence: CaseEvidence[];
+};
+
+type AutomationRequest = {
+  id: string;
+  actionId: "cert_renew" | "lease_revoke" | "rescan" | string;
+  targetId: string;
+  reason: string;
+  requester: string;
+  status: string;
+  createdAt: string;
+  expiresAt: string;
+  firstApprover: string;
+  firstApprovedAt: string;
+  secondApprover: string;
+  secondApprovedAt: string;
+  approvalCount: number;
+  executionEnabled: boolean;
+  dispatchReceipt?: Record<string, unknown> | null;
+};
+
 type AssistantContextKind = "dashboard" | "finding" | "db_audit";
 
 type AssistantContext = {
@@ -328,6 +447,12 @@ type DashboardData = {
   kubernetesCostSummary: KubernetesCostSummary;
   optimizationRecommendations: OptimizationRecommendation[];
   dryRunActions: DryRunAction[];
+  authIdentity: AuthIdentity;
+  vaultMetadata: VaultMetadata;
+  freshnessSources: FreshnessSource[];
+  freshnessGeneratedAt: string;
+  cases: ManagedCase[];
+  automationRequests: AutomationRequest[];
   enterpriseStatus: Record<string, EnterpriseProductStatus>;
   streamHealth: StreamHealth[];
   investigation: InvestigationStep[];
@@ -354,6 +479,7 @@ type LoadState =
 type PortalView =
   | "overview"
   | "investigations"
+  | "cases"
   | "data-security"
   | "application-risk"
   | "automation"
@@ -376,7 +502,8 @@ type IconName =
   | "workflow"
   | "package"
   | "certificate"
-  | "cluster";
+  | "cluster"
+  | "cases";
 
 type PortalViewMeta = {
   title: string;
@@ -396,6 +523,12 @@ const PORTAL_VIEW_META: Record<PortalView, PortalViewMeta> = {
     title: "Investigations",
     subtitle: "Triage findings, correlate evidence, and assign next steps",
     icon: "radar",
+    group: "operations",
+  },
+  cases: {
+    title: "Cases",
+    subtitle: "Ownership, evidence, comments, and SLA tracking for active investigations",
+    icon: "cases",
     group: "operations",
   },
   "data-security": {
@@ -459,6 +592,7 @@ const ICON_COMPONENTS: Record<IconName, LucideIcon> = {
   package: Package,
   certificate: FileBadge2,
   cluster: Network,
+  cases: BriefcaseBusiness,
 };
 
 const ENDPOINTS: Array<{ key: ApiKey; label: string; path: string }> = [
@@ -477,6 +611,11 @@ const ENDPOINTS: Array<{ key: ApiKey; label: string; path: string }> = [
   { key: "kubernetesCostSummary", label: "Cost", path: "/api/kubernetes/cost-summary" },
   { key: "kubernetesOptimization", label: "Optimization", path: "/api/kubernetes/optimization-recommendations" },
   { key: "dryRunActions", label: "Automation", path: "/api/workflows/dry-run-actions" },
+  { key: "authMe", label: "Identity", path: "/api/auth/me" },
+  { key: "vaultMetadata", label: "Vault API", path: "/api/vault/metadata" },
+  { key: "dataSourceFreshness", label: "Freshness", path: "/api/data-sources/freshness" },
+  { key: "cases", label: "Cases", path: "/api/cases" },
+  { key: "automationRequests", label: "Approvals", path: "/api/automation/requests" },
 ];
 
 const DEFAULT_SUMMARY: Summary = {
@@ -493,6 +632,26 @@ const DEFAULT_SUMMARY: Summary = {
   db_audit_events: 3,
   vault_radar_findings: 3,
   elastic_enabled: false,
+};
+
+const DEFAULT_AUTH_IDENTITY: AuthIdentity = {
+  authenticated: false,
+  authMode: "deny",
+  email: "",
+  groups: [],
+  roles: [],
+};
+
+const DEFAULT_VAULT_METADATA: VaultMetadata = {
+  configured: false,
+  status: "unconfigured",
+  authMethod: "none",
+  observedAt: "",
+  health: { status: "unconfigured" },
+  runtime: { status: "unconfigured" },
+  pki: { status: "unconfigured" },
+  leases: { status: "unconfigured" },
+  errors: [],
 };
 
 const DEFAULT_APP_RISK_SUMMARY: ApplicationRiskSummary = {
@@ -925,6 +1084,12 @@ const EMPTY_DASHBOARD: DashboardData = {
   kubernetesCostSummary: FALLBACK_KUBERNETES_COST_SUMMARY,
   optimizationRecommendations: FALLBACK_OPTIMIZATION_RECOMMENDATIONS,
   dryRunActions: FALLBACK_DRY_RUN_ACTIONS,
+  authIdentity: DEFAULT_AUTH_IDENTITY,
+  vaultMetadata: DEFAULT_VAULT_METADATA,
+  freshnessSources: [],
+  freshnessGeneratedAt: "",
+  cases: [],
+  automationRequests: [],
   enterpriseStatus: {},
   streamHealth: [],
   investigation: [],
@@ -972,6 +1137,10 @@ function PortalApp() {
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantError, setAssistantError] = useState("");
   const [assistantLoading, setAssistantLoading] = useState(false);
+  const [caseOverrides, setCaseOverrides] = useState<ManagedCase[] | null>(null);
+  const [automationOverrides, setAutomationOverrides] = useState<AutomationRequest[] | null>(null);
+  const [workspaceMutation, setWorkspaceMutation] = useState("");
+  const [workspaceMutationError, setWorkspaceMutationError] = useState("");
 
   useEffect(() => {
     document.title = t("Information Security Portal");
@@ -1037,6 +1206,8 @@ function PortalApp() {
   }, []);
 
   const dashboard = loadState.data ?? EMPTY_DASHBOARD;
+  const managedCases = caseOverrides ?? dashboard.cases;
+  const automationRequests = automationOverrides ?? dashboard.automationRequests;
   const severityOptions = useMemo(
     () => createOptions(dashboard.findings.map((finding) => finding.severity)),
     [dashboard.findings],
@@ -1098,6 +1269,188 @@ function PortalApp() {
     ],
   );
   const pageMeta = PORTAL_VIEW_META[activeView];
+
+  async function runWorkspaceMutation<T>(
+    mutationKey: string,
+    operation: () => Promise<T>,
+  ): Promise<T | null> {
+    setWorkspaceMutation(mutationKey);
+    setWorkspaceMutationError("");
+    try {
+      return await operation();
+    } catch (error) {
+      setWorkspaceMutationError(
+        error instanceof Error ? error.message : t("The requested operation failed"),
+      );
+      return null;
+    } finally {
+      setWorkspaceMutation("");
+    }
+  }
+
+  async function handleCreateCase(input: {
+    title: string;
+    description: string;
+    severity: string;
+    owner?: string;
+    sourceRef?: string;
+  }) {
+    const created = await runWorkspaceMutation("case-create", async () =>
+      normalizeManagedCase(
+        await requestJson("/api/cases", {
+          method: "POST",
+          body: {
+            title: input.title,
+            description: input.description,
+            severity: input.severity,
+            owner: input.owner || null,
+            source_ref: input.sourceRef || null,
+          },
+        }),
+      ),
+    );
+    if (!created) return null;
+    setCaseOverrides((current) => [
+      created,
+      ...(current ?? dashboard.cases).filter((item) => item.id !== created.id),
+    ]);
+    return created;
+  }
+
+  async function handleUpdateCase(caseId: string, update: Record<string, unknown>) {
+    const updated = await runWorkspaceMutation(`case-${caseId}`, async () =>
+      normalizeManagedCase(
+        await requestJson(`/api/cases/${encodeURIComponent(caseId)}`, {
+          method: "PATCH",
+          body: update,
+        }),
+      ),
+    );
+    if (!updated) return null;
+    setCaseOverrides((current) =>
+      (current ?? dashboard.cases).map((item) => (item.id === updated.id ? updated : item)),
+    );
+    return updated;
+  }
+
+  async function handleRefreshCase(caseId: string) {
+    const refreshed = await runWorkspaceMutation(`case-detail-${caseId}`, async () =>
+      normalizeManagedCase(
+        await requestJson(`/api/cases/${encodeURIComponent(caseId)}`),
+      ),
+    );
+    if (!refreshed) return null;
+    setCaseOverrides((current) =>
+      (current ?? dashboard.cases).map((item) =>
+        item.id === refreshed.id ? refreshed : item,
+      ),
+    );
+    return refreshed;
+  }
+
+  async function handleAddCaseComment(caseId: string, body: string) {
+    const result = await runWorkspaceMutation(`case-comment-${caseId}`, () =>
+      requestJson(`/api/cases/${encodeURIComponent(caseId)}/comments`, {
+        method: "POST",
+        body: { body },
+      }),
+    );
+    if (!result) return null;
+    return handleRefreshCase(caseId);
+  }
+
+  async function handleAddCaseEvidence(caseId: string, finding: Finding) {
+    const result = await runWorkspaceMutation(`case-evidence-${caseId}`, () =>
+      requestJson(`/api/cases/${encodeURIComponent(caseId)}/evidence`, {
+        method: "POST",
+        body: {
+          evidence_type: "manual",
+          source: finding.source || "Vault Radar",
+          reference: finding.id,
+          summary: `${finding.type}: ${finding.secretPath}`,
+          observed_at: finding.eventTime || null,
+        },
+      }),
+    );
+    if (!result) return null;
+    return handleRefreshCase(caseId);
+  }
+
+  async function handleCreateAutomationRequest(
+    actionId: "cert_renew" | "lease_revoke" | "rescan",
+    targetId: string,
+    reason: string,
+  ) {
+    const idempotencyKey = `portal:${actionId}:${targetId}:${Date.now()}`;
+    const created = await runWorkspaceMutation(`automation-create-${actionId}`, async () =>
+      normalizeAutomationRequest(
+        await requestJson("/api/automation/requests", {
+          method: "POST",
+          headers: { "Idempotency-Key": idempotencyKey },
+          body: {
+            action_id: actionId,
+            target_id: targetId,
+            reason,
+            idempotency_key: idempotencyKey,
+          },
+        }),
+      ),
+    );
+    if (!created) return null;
+    setAutomationOverrides((current) => [
+      created,
+      ...(current ?? dashboard.automationRequests).filter((item) => item.id !== created.id),
+    ]);
+    return created;
+  }
+
+  async function handleApproveAutomation(
+    requestId: string,
+    decision: "approve" | "reject",
+  ) {
+    const updated = await runWorkspaceMutation(`automation-${requestId}`, async () =>
+      normalizeAutomationRequest(
+        await requestJson(
+          `/api/automation/requests/${encodeURIComponent(requestId)}/approvals`,
+          {
+            method: "POST",
+            body: {
+              decision,
+              comment:
+                decision === "approve"
+                  ? "Reviewed in the security portal"
+                  : "Rejected in the security portal",
+            },
+          },
+        ),
+      ),
+    );
+    if (!updated) return null;
+    setAutomationOverrides((current) =>
+      (current ?? dashboard.automationRequests).map((item) =>
+        item.id === updated.id ? updated : item,
+      ),
+    );
+    return updated;
+  }
+
+  async function handleDispatchAutomation(requestId: string) {
+    const updated = await runWorkspaceMutation(`automation-dispatch-${requestId}`, async () =>
+      normalizeAutomationRequest(
+        await requestJson(
+          `/api/automation/requests/${encodeURIComponent(requestId)}/dispatch`,
+          { method: "POST" },
+        ),
+      ),
+    );
+    if (!updated) return null;
+    setAutomationOverrides((current) =>
+      (current ?? dashboard.automationRequests).map((item) =>
+        item.id === updated.id ? updated : item,
+      ),
+    );
+    return updated;
+  }
 
   function handleViewChange(view: PortalView) {
     setActiveView(view);
@@ -1218,7 +1571,17 @@ function PortalApp() {
   return (
     <>
     <Shell
-      dashboard={dashboard}
+      dashboard={{
+        ...dashboard,
+        cases: managedCases,
+        automationRequests,
+        summary: {
+          ...dashboard.summary,
+          pending_approvals: automationRequests.filter((request) =>
+            request.status.startsWith("pending_"),
+          ).length,
+        },
+      }}
       kibanaHref={kibanaHref}
       activeView={activeView}
       pageMeta={pageMeta}
@@ -1292,6 +1655,20 @@ function PortalApp() {
           </>
         ) : null}
 
+        {activeView === "cases" ? (
+          <CasesPage
+            cases={managedCases}
+            selectedFinding={selectedFinding}
+            currentUser={dashboard.authIdentity}
+            busyKey={workspaceMutation}
+            error={workspaceMutationError}
+            onCreate={handleCreateCase}
+            onUpdate={handleUpdateCase}
+            onComment={handleAddCaseComment}
+            onEvidence={handleAddCaseEvidence}
+          />
+        ) : null}
+
         {activeView === "data-security" ? (
           <>
             <section className="summary-grid summary-grid--data" aria-label={t("Data security posture")}>
@@ -1300,6 +1677,7 @@ function PortalApp() {
               <RiskCard icon="key" label={t("Dynamic credentials")} value={`${dashboard.vaultEvents.filter((event) => Boolean(event.credentialId)).length}`} trend="Vault" severity="low" />
               <RiskCard icon="activity" label={t("Data risk")} value={`${dashboard.summary.data_risk}`} trend={t("Risk posture")} severity={scoreSeverity(dashboard.summary.data_risk)} />
             </section>
+            <VaultDirectStatusPanel metadata={dashboard.vaultMetadata} />
             <section className="investigation-panel investigation-panel--ribbon" aria-labelledby="lineage-title">
               <div className="section-heading">
                 <div>
@@ -1355,23 +1733,37 @@ function PortalApp() {
         ) : null}
 
         {activeView === "automation" ? (
-          <section className="automation-panel" aria-labelledby="automation-title">
-            <div className="section-heading">
-              <div>
-                <h2 id="automation-title">{t("Dry-run Automation")}</h2>
-                <p>{t("Argo Workflows/Events and StackStorm review actions")}</p>
+          <>
+            <section className="automation-panel" aria-labelledby="automation-title">
+              <div className="section-heading">
+                <div>
+                  <h2 id="automation-title">{t("Dry-run Automation")}</h2>
+                  <p>{t("Argo Workflows/Events and StackStorm review actions")}</p>
+                </div>
+                <span className="compact-meta">{t("{count} actions", { count: dashboard.dryRunActions.length })}</span>
               </div>
-              <span className="compact-meta">{t("{count} actions", { count: dashboard.dryRunActions.length })}</span>
-            </div>
-            <AutomationPanel
-              actions={dashboard.dryRunActions}
-              selectedActionId={selectedAction?.id ?? ""}
-              isRunning={isRunningDryRun}
-              result={dryRunResult}
-              error={dryRunError}
-              onRun={handleDryRun}
+              <AutomationPanel
+                actions={dashboard.dryRunActions}
+                selectedActionId={selectedAction?.id ?? ""}
+                isRunning={isRunningDryRun}
+                result={dryRunResult}
+                error={dryRunError}
+                onRun={handleDryRun}
+              />
+            </section>
+            <ApprovalAutomationPanel
+              requests={automationRequests}
+              currentUser={dashboard.authIdentity}
+              selectedFinding={selectedFinding}
+              selectedAuditEvent={selectedAuditEvent}
+              riskSignals={dashboard.riskSignals}
+              busyKey={workspaceMutation}
+              error={workspaceMutationError}
+              onCreate={handleCreateAutomationRequest}
+              onDecision={handleApproveAutomation}
+              onDispatch={handleDispatchAutomation}
             />
-          </section>
+          </>
         ) : null}
 
         {activeView === "observability" ? (
@@ -1471,6 +1863,9 @@ function Shell({
   const themeLabel = t(theme === "light" ? "Switch to dark mode" : "Switch to light mode");
   const navCount = (view: PortalView) => {
     if (view === "investigations") return dashboard.summary.critical_findings;
+    if (view === "cases") {
+      return dashboard.cases.filter((item) => !["resolved", "closed"].includes(item.status)).length;
+    }
     if (view === "automation") return dashboard.summary.pending_approvals;
     if (view === "system-health") {
       return dashboard.endpointStates.filter((endpoint) => endpoint.status === "error").length;
@@ -1599,9 +1994,29 @@ function Shell({
                 Kibana
               </span>
             )}
-            <span className="user-chip">
+            <span
+              className="user-chip"
+              title={
+                dashboard.authIdentity.roles.length > 0
+                  ? dashboard.authIdentity.roles.join(", ")
+                  : t("No portal role")
+              }
+            >
               <Icon name="user" />
-              {t("SOC Analyst")}
+              <span>
+                <strong>
+                  {dashboard.authIdentity.email ||
+                    (dashboard.authIdentity.authenticated
+                      ? t("Authenticated user")
+                      : t("Read-only session"))}
+                </strong>
+                <small>
+                  {dashboard.authIdentity.roles[0] ||
+                    (dashboard.authIdentity.authenticated
+                      ? t("Authenticated")
+                      : t("Authentication pending"))}
+                </small>
+              </span>
             </span>
           </div>
         </header>
@@ -1889,6 +2304,562 @@ function TelemetryHealthTable({ dashboard }: { dashboard: DashboardData }) {
   );
 }
 
+function VaultDirectStatusPanel({ metadata }: { metadata: VaultMetadata }) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
+  const isLive = metadata.status === "live";
+  const tokenTtl = metadata.runtime.identity?.ttlSeconds;
+  const observed = metadata.observedAt ? localizedTime(metadata.observedAt) : t("Not observed");
+  const cards = [
+    {
+      label: t("Vault cluster"),
+      value: metadata.health.sealed === false ? t("Unsealed") : label(metadata.health.status),
+      detail: metadata.health.version || t("Version unavailable"),
+      tone: metadata.health.sealed === false ? "healthy" : "degraded",
+    },
+    {
+      label: t("PKI inventory"),
+      value:
+        metadata.pki.status === "live"
+          ? t("{count} certificates", { count: metadata.pki.certificateCount ?? 0 })
+          : label(metadata.pki.status),
+      detail: t("{count} issuers · {roles} roles", {
+        count: metadata.pki.issuerCount ?? 0,
+        roles: metadata.pki.roleCount ?? 0,
+      }),
+      tone: metadata.pki.status === "live" ? "healthy" : "mock",
+    },
+    {
+      label: t("Dynamic leases"),
+      value:
+        metadata.leases.status === "live"
+          ? `${metadata.leases.leaseCount ?? 0}`
+          : label(metadata.leases.status),
+      detail: metadata.leases.prefixConfigured
+        ? t("Read-only lease metadata")
+        : t("Lease prefix not configured"),
+      tone: metadata.leases.status === "live" ? "healthy" : "mock",
+    },
+    {
+      label: t("Read-only identity"),
+      value: tokenTtl ? t("{minutes} min TTL", { minutes: Math.max(1, Math.round(tokenTtl / 60)) }) : label(metadata.runtime.status),
+      detail: t("{count} policies · {mounts} mounts", {
+        count: metadata.runtime.identity?.policyCount ?? 0,
+        mounts: metadata.runtime.mountCount ?? 0,
+      }),
+      tone: metadata.runtime.status === "live" ? "healthy" : "mock",
+    },
+  ];
+
+  return (
+    <section className="operations-panel vault-live-panel" aria-labelledby="vault-live-title">
+      <div className="section-heading">
+        <div>
+          <h2 id="vault-live-title">{t("Direct Vault connection")}</h2>
+          <p>{t("Read-only health, PKI, and lease metadata from the Vault API")}</p>
+        </div>
+        <span className={`health-chip health-chip--${isLive ? "healthy" : "degraded"}`}>
+          <span className={`status-dot status-dot--${isLive ? "healthy" : "degraded"}`} aria-hidden="true" />
+          {label(metadata.status)}
+        </span>
+      </div>
+      <div className="vault-live-grid">
+        {cards.map((card) => (
+          <div className="vault-live-stat" key={card.label}>
+            <span className={`status-dot status-dot--${card.tone}`} aria-hidden="true" />
+            <div>
+              <small>{card.label}</small>
+              <strong>{card.value}</strong>
+              <span>{card.detail}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="provenance-strip">
+        <ShieldCheck size={15} aria-hidden="true" />
+        <span>{t("Source: Vault API · mode: read-only · observed {time}", { time: observed })}</span>
+      </div>
+    </section>
+  );
+}
+
+function CasesPage({
+  cases,
+  selectedFinding,
+  currentUser,
+  busyKey,
+  error,
+  onCreate,
+  onUpdate,
+  onComment,
+  onEvidence,
+}: {
+  cases: ManagedCase[];
+  selectedFinding?: Finding;
+  currentUser: AuthIdentity;
+  busyKey: string;
+  error: string;
+  onCreate: (input: {
+    title: string;
+    description: string;
+    severity: string;
+    owner?: string;
+    sourceRef?: string;
+  }) => Promise<ManagedCase | null>;
+  onUpdate: (caseId: string, update: Record<string, unknown>) => Promise<ManagedCase | null>;
+  onComment: (caseId: string, body: string) => Promise<ManagedCase | null>;
+  onEvidence: (caseId: string, finding: Finding) => Promise<ManagedCase | null>;
+}) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
+  const [selectedId, setSelectedId] = useState(cases[0]?.id ?? "");
+  const [showCreate, setShowCreate] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [severity, setSeverity] = useState(selectedFinding?.severity || "medium");
+  const [owner, setOwner] = useState(currentUser.email);
+  const [comment, setComment] = useState("");
+  const selected = cases.find((item) => item.id === selectedId) ?? cases[0];
+  const canMutate = currentUser.roles.some((role) =>
+    ["SOC_ADMIN", "SECURITY_ANALYST"].includes(role),
+  );
+
+  useEffect(() => {
+    if (!selectedId && cases[0]) setSelectedId(cases[0].id);
+    if (selectedId && !cases.some((item) => item.id === selectedId)) {
+      setSelectedId(cases[0]?.id ?? "");
+    }
+  }, [cases, selectedId]);
+
+  async function submitCase(event: FormEvent) {
+    event.preventDefault();
+    const created = await onCreate({
+      title: title.trim(),
+      description: description.trim(),
+      severity,
+      owner: owner.trim() || undefined,
+      sourceRef: selectedFinding?.id,
+    });
+    if (!created) return;
+    setSelectedId(created.id);
+    setTitle("");
+    setDescription("");
+    setShowCreate(false);
+  }
+
+  return (
+    <div className="case-workspace">
+      <section className="operations-panel case-list-panel" aria-labelledby="case-queue-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="case-queue-title">{t("Investigation case queue")}</h2>
+            <p>{t("Track ownership, evidence, comments, and response SLA")}</p>
+          </div>
+          <button
+            className="action-button action-button--icon"
+            type="button"
+            disabled={!canMutate}
+            onClick={() => setShowCreate((current) => !current)}
+          >
+            <Plus size={16} aria-hidden="true" />
+            {t("New case")}
+          </button>
+        </div>
+        {!canMutate ? (
+          <div className="inline-guidance">
+            <ShieldCheck size={16} aria-hidden="true" />
+            <span>{t("Sign in as a security analyst to create or update cases.")}</span>
+          </div>
+        ) : null}
+        {showCreate ? (
+          <form className="case-create-form" onSubmit={submitCase}>
+            <label>
+              <span>{t("Title")}</span>
+              <input value={title} minLength={3} required onChange={(event) => setTitle(event.target.value)} />
+            </label>
+            <label>
+              <span>{t("Severity")}</span>
+              <select value={severity} onChange={(event) => setSeverity(event.target.value)}>
+                {["critical", "high", "medium", "low"].map((item) => (
+                  <option key={item} value={item}>{label(item)}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t("Owner")}</span>
+              <input value={owner} onChange={(event) => setOwner(event.target.value)} />
+            </label>
+            <label className="case-create-form__description">
+              <span>{t("Description")}</span>
+              <textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+            </label>
+            <div className="form-actions">
+              <button className="secondary-command" type="button" onClick={() => setShowCreate(false)}>
+                {t("Cancel")}
+              </button>
+              <button className="action-button" type="submit" disabled={busyKey === "case-create"}>
+                {busyKey === "case-create" ? t("Creating...") : t("Create case")}
+              </button>
+            </div>
+          </form>
+        ) : null}
+        <div className="case-list">
+          {cases.length > 0 ? cases.map((item) => (
+            <button
+              className={`case-list__item${selected?.id === item.id ? " case-list__item--active" : ""}`}
+              type="button"
+              key={item.id}
+              onClick={() => setSelectedId(item.id)}
+            >
+              <span className={`severity-pill severity-pill--${normalizeSeverity(item.severity)}`}>
+                {label(item.severity)}
+              </span>
+              <strong>{item.title}</strong>
+              <span>{item.owner || t("Unassigned")} · {label(item.status)}</span>
+              <small className={`sla-state sla-state--${item.slaStatus}`}>
+                <Clock3 size={12} aria-hidden="true" />
+                {t("SLA {status}", { status: label(item.slaStatus) })}
+              </small>
+            </button>
+          )) : (
+            <EmptyState
+              title={t("No investigation cases")}
+              detail={t("Create a case from the selected finding when ownership or follow-up is required.")}
+            />
+          )}
+        </div>
+      </section>
+
+      <section className="operations-panel case-detail-panel" aria-labelledby="case-detail-title">
+        {selected ? (
+          <>
+            <div className="section-heading">
+              <div>
+                <h2 id="case-detail-title">{selected.title}</h2>
+                <p>{selected.id} · {t("Updated {time}", { time: localizedTime(selected.updatedAt) })}</p>
+              </div>
+              <span className={`result-pill result-pill--${selected.status}`}>{label(selected.status)}</span>
+            </div>
+            <dl className="case-facts">
+              <div><dt>{t("Owner")}</dt><dd>{selected.owner || t("Unassigned")}</dd></div>
+              <div><dt>{t("SLA due")}</dt><dd>{localizedTime(selected.slaDueAt)}</dd></div>
+              <div><dt>{t("Source reference")}</dt><dd>{selected.sourceRef || t("Manual")}</dd></div>
+              <div><dt>{t("Evidence")}</dt><dd>{selected.evidence.length}</dd></div>
+            </dl>
+            {selected.description ? <p className="case-description">{selected.description}</p> : null}
+            <div className="case-command-row">
+              <button
+                className="secondary-command"
+                type="button"
+                disabled={!canMutate || busyKey === `case-${selected.id}`}
+                onClick={() => void onUpdate(selected.id, { status: "investigating" })}
+              >
+                {t("Start investigation")}
+              </button>
+              <button
+                className="secondary-command"
+                type="button"
+                disabled={!canMutate || busyKey === `case-${selected.id}`}
+                onClick={() => void onUpdate(selected.id, { status: "resolved" })}
+              >
+                <Check size={15} aria-hidden="true" />
+                {t("Resolve")}
+              </button>
+              <button
+                className="secondary-command"
+                type="button"
+                disabled={!canMutate || !selectedFinding || busyKey === `case-evidence-${selected.id}`}
+                onClick={() => selectedFinding && void onEvidence(selected.id, selectedFinding)}
+              >
+                <FileBadge2 size={15} aria-hidden="true" />
+                {t("Attach selected finding")}
+              </button>
+            </div>
+            <div className="case-activity">
+              <div>
+                <h3>{t("Evidence")}</h3>
+                {selected.evidence.length > 0 ? selected.evidence.map((item) => (
+                  <div className="case-activity__item" key={item.id}>
+                    <strong>{item.source}</strong>
+                    <span>{item.summary}</span>
+                    <small>{localizedTime(item.observedAt || item.createdAt)}</small>
+                  </div>
+                )) : <span className="muted-copy">{t("No evidence attached yet.")}</span>}
+              </div>
+              <div>
+                <h3>{t("Comments")}</h3>
+                {selected.comments.map((item) => (
+                  <div className="case-activity__item" key={item.id}>
+                    <strong>{item.author}</strong>
+                    <span>{item.body}</span>
+                    <small>{localizedTime(item.createdAt)}</small>
+                  </div>
+                ))}
+                <form
+                  className="comment-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const body = comment.trim();
+                    if (!body) return;
+                    void onComment(selected.id, body).then((result) => {
+                      if (result) setComment("");
+                    });
+                  }}
+                >
+                  <input
+                    aria-label={t("Add comment")}
+                    placeholder={t("Add a concise investigation note")}
+                    value={comment}
+                    disabled={!canMutate}
+                    onChange={(event) => setComment(event.target.value)}
+                  />
+                  <button
+                    className="action-button action-button--icon-only"
+                    type="submit"
+                    aria-label={t("Post comment")}
+                    title={t("Post comment")}
+                    disabled={!canMutate || !comment.trim() || busyKey === `case-comment-${selected.id}`}
+                  >
+                    <Send size={16} aria-hidden="true" />
+                  </button>
+                </form>
+              </div>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            title={t("Select a case")}
+            detail={t("Choose a case to review ownership, evidence, and response progress.")}
+          />
+        )}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+      </section>
+    </div>
+  );
+}
+
+function ApprovalAutomationPanel({
+  requests,
+  currentUser,
+  selectedFinding,
+  selectedAuditEvent,
+  riskSignals,
+  busyKey,
+  error,
+  onCreate,
+  onDecision,
+  onDispatch,
+}: {
+  requests: AutomationRequest[];
+  currentUser: AuthIdentity;
+  selectedFinding?: Finding;
+  selectedAuditEvent?: AuditEvent;
+  riskSignals: RiskSignal[];
+  busyKey: string;
+  error: string;
+  onCreate: (
+    actionId: "cert_renew" | "lease_revoke" | "rescan",
+    targetId: string,
+    reason: string,
+  ) => Promise<AutomationRequest | null>;
+  onDecision: (
+    requestId: string,
+    decision: "approve" | "reject",
+  ) => Promise<AutomationRequest | null>;
+  onDispatch: (requestId: string) => Promise<AutomationRequest | null>;
+}) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
+  const canMutate = currentUser.roles.some((role) =>
+    ["SOC_ADMIN", "SECURITY_ANALYST", "PLATFORM_ENGINEER", "DBA"].includes(role),
+  );
+  const templates = [
+    {
+      id: "rescan" as const,
+      title: t("Vault Radar rescan"),
+      target: selectedFinding?.id || "vault-radar-approved-sources",
+      reason: t("Re-scan the approved sources after analyst review"),
+    },
+    {
+      id: "cert_renew" as const,
+      title: t("Vault PKI renewal"),
+      target: riskSignals.find((item) => item.category === "certificate")?.signalId || "selected-certificate",
+      reason: t("Prepare certificate renewal after two independent approvals"),
+    },
+    {
+      id: "lease_revoke" as const,
+      title: t("Vault lease revocation"),
+      target: selectedAuditEvent?.credentialId || selectedAuditEvent?.id || "selected-lease",
+      reason: t("Prepare lease revocation after evidence and ownership review"),
+    },
+  ];
+
+  return (
+    <section className="operations-panel approval-panel" aria-labelledby="approval-title">
+      <div className="section-heading">
+        <div>
+          <h2 id="approval-title">{t("Two-person approval queue")}</h2>
+          <p>{t("Requests expire automatically and cannot be approved twice by the same identity")}</p>
+        </div>
+        <span className="compact-meta">
+          {t("{count} pending", {
+            count: requests.filter((item) => item.status.startsWith("pending_")).length,
+          })}
+        </span>
+      </div>
+      <div className="approval-template-grid">
+        {templates.map((template) => (
+          <div className="approval-template" key={template.id}>
+            <div>
+              <strong>{template.title}</strong>
+              <span>{template.target}</span>
+            </div>
+            <button
+              className="secondary-command"
+              type="button"
+              disabled={!canMutate || busyKey === `automation-create-${template.id}`}
+              onClick={() => void onCreate(template.id, template.target, template.reason)}
+            >
+              <Plus size={15} aria-hidden="true" />
+              {t("Request approval")}
+            </button>
+          </div>
+        ))}
+      </div>
+      {!canMutate ? (
+        <div className="inline-guidance">
+          <ShieldCheck size={16} aria-hidden="true" />
+          <span>{t("A permitted Keycloak role is required to create or approve requests.")}</span>
+        </div>
+      ) : null}
+      <div className="approval-list">
+        {requests.length > 0 ? requests.map((request) => {
+          const secondReviewerRequired =
+            request.status === "pending_second_approval" &&
+            request.firstApprover.toLowerCase() === currentUser.email.toLowerCase();
+          const busy = busyKey === `automation-${request.id}` ||
+            busyKey === `automation-dispatch-${request.id}`;
+          return (
+            <article className="approval-row" key={request.id}>
+              <div className="approval-row__status">
+                <span className={`status-dot status-dot--${approvalTone(request.status)}`} aria-hidden="true" />
+                <div>
+                  <strong>{label(request.actionId)}</strong>
+                  <span>{request.targetId}</span>
+                </div>
+              </div>
+              <div className="approval-progress" aria-label={t("Approval progress")}>
+                {[1, 2].map((step) => (
+                  <span
+                    className={request.approvalCount >= step ? "approval-progress__step approval-progress__step--done" : "approval-progress__step"}
+                    key={step}
+                  >
+                    {request.approvalCount >= step ? <Check size={12} aria-hidden="true" /> : step}
+                  </span>
+                ))}
+                <small>{t("{count}/2 approvals", { count: request.approvalCount })}</small>
+              </div>
+              <div className="approval-row__meta">
+                <span>{label(request.status)}</span>
+                <small>{t("Expires {time}", { time: localizedTime(request.expiresAt) })}</small>
+              </div>
+              <div className="approval-row__actions">
+                {request.status.startsWith("pending_") ? (
+                  <>
+                    <button
+                      className="secondary-command"
+                      type="button"
+                      disabled={!canMutate || secondReviewerRequired || busy}
+                      title={secondReviewerRequired ? t("A different reviewer must provide the second approval.") : undefined}
+                      onClick={() => void onDecision(request.id, "approve")}
+                    >
+                      <Check size={14} aria-hidden="true" />
+                      {t("Approve")}
+                    </button>
+                    <button
+                      className="text-button text-button--danger"
+                      type="button"
+                      disabled={!canMutate || busy}
+                      onClick={() => void onDecision(request.id, "reject")}
+                    >
+                      {t("Reject")}
+                    </button>
+                  </>
+                ) : null}
+                {request.status === "approved" ? (
+                  <button
+                    className="secondary-command"
+                    type="button"
+                    disabled={!canMutate || !request.executionEnabled || busy}
+                    title={!request.executionEnabled ? t("Execution remains disabled by policy.") : undefined}
+                    onClick={() => void onDispatch(request.id)}
+                  >
+                    <Workflow size={14} aria-hidden="true" />
+                    {request.executionEnabled ? t("Dispatch") : t("Execution disabled")}
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          );
+        }) : (
+          <EmptyState
+            title={t("No approval requests")}
+            detail={t("Create a reviewed request above; execution remains disabled until policy explicitly enables it.")}
+          />
+        )}
+      </div>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
+function DataFreshnessPanel({
+  sources,
+  generatedAt,
+}: {
+  sources: FreshnessSource[];
+  generatedAt: string;
+}) {
+  const { t, label, formatTime: localizedTime } = usePreferences();
+  return (
+    <section className="operations-panel freshness-panel" aria-labelledby="freshness-title">
+      <div className="section-heading">
+        <div>
+          <h2 id="freshness-title">{t("Data trust and freshness")}</h2>
+          <p>{t("Observed time, freshness threshold, provenance, and fallback state by source")}</p>
+        </div>
+        <span className="compact-meta">
+          {generatedAt ? t("Generated {time}", { time: localizedTime(generatedAt) }) : t("Awaiting live assessment")}
+        </span>
+      </div>
+      {sources.length > 0 ? (
+        <div className="freshness-grid">
+          {sources.map((source) => (
+            <div className="freshness-row" key={source.id}>
+              <span className={`status-dot status-dot--${freshnessTone(source.status)}`} aria-hidden="true" />
+              <div>
+                <strong>{label(source.id)}</strong>
+                <span>{source.provenanceSource} · {label(source.provenanceMode)}</span>
+              </div>
+              <div className="freshness-row__age">
+                <strong>
+                  {source.ageSeconds === undefined
+                    ? t("No live timestamp")
+                    : t("{duration} old", { duration: formatDuration(source.ageSeconds) })}
+                </strong>
+                <span>{t("Threshold {duration}", { duration: formatDuration(source.thresholdSeconds) })}</span>
+              </div>
+              <span className={`result-pill result-pill--${source.status}`}>{label(source.status)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          title={t("Freshness assessment unavailable")}
+          detail={t("The portal will label live, stale, and fallback sources after the freshness API responds.")}
+        />
+      )}
+    </section>
+  );
+}
+
 function SystemHealthPage({ dashboard }: { dashboard: DashboardData }) {
   const { t, label } = usePreferences();
   const healthyApis = dashboard.endpointStates.filter((endpoint) => endpoint.status === "ok").length;
@@ -1905,6 +2876,10 @@ function SystemHealthPage({ dashboard }: { dashboard: DashboardData }) {
         <RiskCard icon="shield" label={t("Enterprise ready")} value={`${enterpriseConfigured}/${Math.max(enterpriseEntries.length, 1)}`} trend={t("Image or license configured")} severity={enterpriseConfigured > 0 ? "low" : "medium"} />
       </section>
       <TelemetryHealthTable dashboard={dashboard} />
+      <DataFreshnessPanel
+        sources={dashboard.freshnessSources}
+        generatedAt={dashboard.freshnessGeneratedAt}
+      />
       <div className="health-detail-grid">
         <section className="operations-panel" aria-labelledby="api-source-status-title">
           <div className="section-heading">
@@ -3250,6 +4225,36 @@ async function fetchJson(path: string, signal: AbortSignal): Promise<unknown> {
   return response.json();
 }
 
+async function requestJson(
+  path: string,
+  options: {
+    method?: "GET" | "POST" | "PATCH";
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+  } = {},
+): Promise<unknown> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: options.method ?? "GET",
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...options.headers,
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = isRecord(payload) ? asText(payload.detail) : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail || `${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
 async function postDryRun({
   actionId,
   engine,
@@ -3309,6 +4314,13 @@ function createDashboardData(
   const optimizationRecommendations = asArray(byKey.get("kubernetesOptimization")).map(normalizeOptimizationRecommendation);
   const optimizationEndpoint = endpointStates.find((endpoint) => endpoint.key === "kubernetesOptimization");
   const dryRunActions = asArray(byKey.get("dryRunActions")).map(normalizeDryRunAction);
+  const authIdentity = normalizeAuthIdentity(byKey.get("authMe"));
+  const vaultMetadata = normalizeVaultMetadata(byKey.get("vaultMetadata"));
+  const freshness = normalizeFreshness(byKey.get("dataSourceFreshness"));
+  const cases = asArray(byKey.get("cases")).map(normalizeManagedCase);
+  const automationRequests = asArray(byKey.get("automationRequests")).map(
+    normalizeAutomationRequest,
+  );
   const enterpriseStatus = normalizeEnterpriseStatus(byKey.get("enterpriseStatus"));
   const findings = dedupeById([
     ...asArray(byKey.get("vaultRadarFindings")).map(normalizeFinding),
@@ -3338,7 +4350,7 @@ function createDashboardData(
     cost_risk: Math.max(summary.cost_risk, Math.min(100, Math.round(kubernetesCostSummary.potentialMonthlySavings / 25))),
     pending_approvals: Math.max(
       summary.pending_approvals,
-      normalizedDryRunActions.filter((action) => action.status === "ready").length,
+      automationRequests.filter((request) => request.status.startsWith("pending_")).length,
     ),
   };
   const streamHealth = createStreamHealth(finalSummary, endpointStates, normalizedVaultEvents, normalizedDbEvents, normalizedFindings);
@@ -3367,6 +4379,12 @@ function createDashboardData(
         ? FALLBACK_OPTIMIZATION_RECOMMENDATIONS
         : [],
     dryRunActions: normalizedDryRunActions,
+    authIdentity,
+    vaultMetadata,
+    freshnessSources: freshness.sources,
+    freshnessGeneratedAt: freshness.generatedAt,
+    cases,
+    automationRequests,
     enterpriseStatus,
     streamHealth,
     investigation,
@@ -3608,6 +4626,180 @@ function normalizeDryRunResult(value: unknown): DryRunResult {
   };
 }
 
+function normalizeAuthIdentity(value: unknown): AuthIdentity {
+  const source = isRecord(value) ? value : {};
+  const authModeValue = asText(source.auth_mode ?? source.authMode, "deny");
+  const authMode = ["deny", "lab", "trusted_headers"].includes(authModeValue)
+    ? (authModeValue as AuthIdentity["authMode"])
+    : "deny";
+  return {
+    authenticated: Boolean(source.authenticated),
+    authMode,
+    email: asText(source.email),
+    groups: asArray(source.groups).map((item) => asText(item)).filter(Boolean),
+    roles: asArray(source.roles).map((item) => asText(item)).filter(Boolean),
+  };
+}
+
+function normalizeVaultMetadata(value: unknown): VaultMetadata {
+  if (!isRecord(value)) return DEFAULT_VAULT_METADATA;
+  const health = isRecord(value.health) ? value.health : {};
+  const runtime = isRecord(value.runtime) ? value.runtime : {};
+  const identity = isRecord(runtime.identity) ? runtime.identity : {};
+  const pki = isRecord(value.pki) ? value.pki : {};
+  const leases = isRecord(value.leases) ? value.leases : {};
+  return {
+    configured: Boolean(value.configured),
+    status: asText(value.status, "unconfigured"),
+    authMethod: asText(value.auth_method ?? value.authMethod, "none"),
+    observedAt: asText(value.observed_at ?? value.observedAt),
+    health: {
+      status: asText(health.status, "unconfigured"),
+      initialized: typeof health.initialized === "boolean" ? health.initialized : undefined,
+      sealed: typeof health.sealed === "boolean" ? health.sealed : undefined,
+      standby: typeof health.standby === "boolean" ? health.standby : undefined,
+      version: asText(health.version) || undefined,
+      clusterName: asText(health.cluster_name ?? health.clusterName) || undefined,
+    },
+    runtime: {
+      status: asText(runtime.status, "unconfigured"),
+      mountCount: asOptionalNumber(runtime.mount_count ?? runtime.mountCount),
+      pkiMountConfigured:
+        typeof (runtime.pki_mount_configured ?? runtime.pkiMountConfigured) === "boolean"
+          ? Boolean(runtime.pki_mount_configured ?? runtime.pkiMountConfigured)
+          : undefined,
+      identity: Object.keys(identity).length > 0
+        ? {
+            ttlSeconds: asOptionalNumber(identity.ttl_seconds ?? identity.ttlSeconds),
+            renewable:
+              typeof identity.renewable === "boolean" ? identity.renewable : undefined,
+            policyCount: asOptionalNumber(identity.policy_count ?? identity.policyCount),
+          }
+        : undefined,
+    },
+    pki: {
+      status: asText(pki.status, "unconfigured"),
+      mount: asText(pki.mount) || undefined,
+      certificateCount: asOptionalNumber(pki.certificate_count ?? pki.certificateCount),
+      issuerCount: asOptionalNumber(pki.issuer_count ?? pki.issuerCount),
+      roleCount: asOptionalNumber(pki.role_count ?? pki.roleCount),
+      defaultIssuer: asText(pki.default_issuer ?? pki.defaultIssuer) || undefined,
+    },
+    leases: {
+      status: asText(leases.status, "unconfigured"),
+      prefixConfigured:
+        typeof (leases.prefix_configured ?? leases.prefixConfigured) === "boolean"
+          ? Boolean(leases.prefix_configured ?? leases.prefixConfigured)
+          : undefined,
+      leaseCount: asOptionalNumber(leases.lease_count ?? leases.leaseCount),
+    },
+    errors: asArray(value.errors).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      return [{
+        component: asText(item.component) || undefined,
+        code: asText(item.code) || undefined,
+        message: asText(item.message) || undefined,
+      }];
+    }),
+  };
+}
+
+function normalizeFreshness(value: unknown): {
+  generatedAt: string;
+  sources: FreshnessSource[];
+} {
+  const source = isRecord(value) ? value : {};
+  return {
+    generatedAt: asText(source.generated_at ?? source.generatedAt),
+    sources: asArray(source.sources).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const provenance = isRecord(item.provenance) ? item.provenance : {};
+      const details = isRecord(item.details) ? item.details : {};
+      const statusValue = asText(item.status, "error");
+      const status = ["live", "stale", "fallback", "error"].includes(statusValue)
+        ? (statusValue as FreshnessSource["status"])
+        : "error";
+      return [{
+        id: asText(item.id, "unknown"),
+        status,
+        observedAt: asText(item.observed_at ?? item.observedAt),
+        ageSeconds: asOptionalNumber(item.age_seconds ?? item.ageSeconds),
+        thresholdSeconds: asNumber(item.threshold_seconds ?? item.thresholdSeconds, 300),
+        provenanceSource: asText(provenance.source, "unknown"),
+        provenanceMode: asText(provenance.mode, "unknown"),
+        connectionStatus: asText(
+          details.connection_status ?? details.connectionStatus,
+          status,
+        ),
+      }];
+    }),
+  };
+}
+
+function normalizeManagedCase(value: unknown, index = 0): ManagedCase {
+  const source = isRecord(value) ? value : {};
+  return {
+    id: asText(source.id, `case-${index}`),
+    title: asText(source.title, "Investigation case"),
+    description: asText(source.description),
+    severity: normalizeSeverity(source.severity),
+    status: asText(source.status, "open"),
+    owner: asText(source.owner),
+    slaDueAt: asText(source.sla_due_at ?? source.slaDueAt),
+    slaStatus: asText(source.sla_status ?? source.slaStatus, "not_set"),
+    sourceRef: asText(source.source_ref ?? source.sourceRef),
+    createdBy: asText(source.created_by ?? source.createdBy),
+    createdAt: asText(source.created_at ?? source.createdAt),
+    updatedAt: asText(source.updated_at ?? source.updatedAt),
+    comments: asArray(source.comments).flatMap((item, commentIndex) => {
+      if (!isRecord(item)) return [];
+      return [{
+        id: asText(item.id, `comment-${commentIndex}`),
+        author: asText(item.author),
+        body: asText(item.body),
+        createdAt: asText(item.created_at ?? item.createdAt),
+      }];
+    }),
+    evidence: asArray(source.evidence).flatMap((item, evidenceIndex) => {
+      if (!isRecord(item)) return [];
+      return [{
+        id: asText(item.id, `evidence-${evidenceIndex}`),
+        evidenceType: asText(item.evidence_type ?? item.evidenceType, "manual"),
+        source: asText(item.source),
+        reference: asText(item.reference),
+        summary: asText(item.summary),
+        observedAt: asText(item.observed_at ?? item.observedAt),
+        addedBy: asText(item.added_by ?? item.addedBy),
+        createdAt: asText(item.created_at ?? item.createdAt),
+      }];
+    }),
+  };
+}
+
+function normalizeAutomationRequest(value: unknown, index = 0): AutomationRequest {
+  const source = isRecord(value) ? value : {};
+  const dispatchReceipt = isRecord(source.dispatch_receipt ?? source.dispatchReceipt)
+    ? (source.dispatch_receipt ?? source.dispatchReceipt) as Record<string, unknown>
+    : null;
+  return {
+    id: asText(source.id, `automation-${index}`),
+    actionId: asText(source.action_id ?? source.actionId, "rescan"),
+    targetId: asText(source.target_id ?? source.targetId),
+    reason: asText(source.reason),
+    requester: asText(source.requester),
+    status: asText(source.status, "pending_first_approval"),
+    createdAt: asText(source.created_at ?? source.createdAt),
+    expiresAt: asText(source.expires_at ?? source.expiresAt),
+    firstApprover: asText(source.first_approver ?? source.firstApprover),
+    firstApprovedAt: asText(source.first_approved_at ?? source.firstApprovedAt),
+    secondApprover: asText(source.second_approver ?? source.secondApprover),
+    secondApprovedAt: asText(source.second_approved_at ?? source.secondApprovedAt),
+    approvalCount: asNumber(source.approval_count ?? source.approvalCount, 0),
+    executionEnabled: Boolean(source.execution_enabled ?? source.executionEnabled),
+    dispatchReceipt,
+  };
+}
+
 function normalizeEnterpriseStatus(value: unknown): Record<string, EnterpriseProductStatus> {
   if (!isRecord(value)) return {};
   const entries: Array<[string, EnterpriseProductStatus]> = [];
@@ -3631,7 +4823,10 @@ function endpointCount(key: ApiKey, data: unknown) {
     key === "summary" ||
     key === "applicationRiskSummary" ||
     key === "kubernetesPlatform" ||
-    key === "kubernetesCostSummary"
+    key === "kubernetesCostSummary" ||
+    key === "authMe" ||
+    key === "vaultMetadata" ||
+    key === "dataSourceFreshness"
   ) {
     return data ? 1 : 0;
   }
@@ -3925,6 +5120,26 @@ function formatTime(value: string) {
   }).format(new Date(time));
 }
 
+function formatDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "n/a";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+function freshnessTone(status: FreshnessSource["status"]) {
+  if (status === "live") return "healthy";
+  if (status === "stale" || status === "fallback") return "mock";
+  return "degraded";
+}
+
+function approvalTone(status: string) {
+  if (status === "approved" || status === "dispatched") return "healthy";
+  if (status.startsWith("pending_")) return "mock";
+  return "degraded";
+}
+
 function formatMoney(value: number) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -3952,6 +5167,7 @@ function asNumber(value: unknown, fallback = 0) {
 }
 
 function asOptionalNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return undefined;
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : undefined;
 }

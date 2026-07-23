@@ -125,6 +125,31 @@ running. Filebeat uses `filestream` against Docker container logs and writes to
 `filebeat-security-lab-*`. The default portal authentication mode fails closed;
 provide approved Keycloak OIDC/proxy settings before enabling user access.
 
+## HTTPS, Keycloak OIDC, and Direct Vault Release
+
+Review the complete release plan without changing AWS:
+
+```bash
+AWS_REGION=ap-northeast-2 \
+ADMIN_CIDR=<operator-public-ip>/32 \
+  scripts/deploy-security-portal-stack.sh
+```
+
+After reviewing the target instance, dedicated ALB, certificate, Route53
+records, and allowed CIDR, apply and deploy:
+
+```bash
+AWS_REGION=ap-northeast-2 \
+ADMIN_CIDR=<operator-public-ip>/32 \
+APPLY=true \
+  scripts/deploy-security-portal-stack.sh
+```
+
+The command creates or reuses the HTTPS edge, configures the Keycloak client
+without printing secrets, deploys the portal through SSM, and verifies the
+health endpoint, OIDC redirect, and issuer. See
+`docs/security-portal-release-runbook.md`.
+
 ## Demo Procedure
 
 1. Create a synthetic secret exposure and confirm Vault Radar emits a finding.

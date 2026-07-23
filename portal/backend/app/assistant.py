@@ -12,7 +12,9 @@ from .models import (
     AssistantChatResponse,
     AssistantEvidence,
     AssistantRecommendation,
+    AssistantToolResult,
 )
+from .safe_data import sanitize_data
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,8 @@ _BEARER_TOKEN = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{12,}")
 _GITHUB_TOKEN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _HASHICORP_TOKEN = re.compile(r"\b(?:hvs|hvb)\.[A-Za-z0-9_-]{16,}\b")
-_SECRET_FIELD = (
+# This matches secret field names for redaction; it is not a credential.
+_SECRET_FIELD = (  # nosec B105
     r"(?:password|passwd|token|api[_-]?key|client[_-]?secret|"
     r"aws[_-]?secret[_-]?access[_-]?key|secret[_-]?access[_-]?key|"
     r"access[_-]?token|refresh[_-]?token)"
@@ -135,6 +138,61 @@ def _build_evidence(context: dict[str, Any], locale: str) -> list[AssistantEvide
         rendered = f"{value}/100" if key == "risk_score" else str(value)
         evidence.append(AssistantEvidence(label=labels[key], value=rendered, source=source_path))
     return evidence[:6]
+
+
+def _sanitize_tool_results(
+    tool_results: list[dict[str, Any]] | None,
+) -> list[AssistantToolResult]:
+    sanitized_results = []
+    for item in (tool_results or [])[:8]:
+        safe_item = sanitize_data(item, max_depth=4, max_items=40, text_limit=500)
+        if not isinstance(safe_item, dict):
+            continue
+        try:
+            sanitized_results.append(AssistantToolResult.model_validate(safe_item))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring an invalid AI evidence tool result")
+    return sanitized_results
+
+
+def _tool_evidence(
+    tool_results: list[AssistantToolResult],
+    locale: str,
+) -> list[AssistantEvidence]:
+    labels = {
+        "en": {
+            "elastic": "Elastic telemetry",
+            "vault": "Vault metadata",
+            "kubernetes": "Kubernetes status",
+            "prometheus": "Prometheus status",
+        },
+        "ko": {
+            "elastic": "Elastic 텔레메트리",
+            "vault": "Vault 메타데이터",
+            "kubernetes": "Kubernetes 상태",
+            "prometheus": "Prometheus 상태",
+        },
+    }[locale]
+    evidence = []
+    for result in tool_results:
+        metrics = []
+        for key, value in result.summary.items():
+            if value is None or isinstance(value, (dict, list)):
+                continue
+            metrics.append(f"{key}={_redact_text(str(value), limit=120)}")
+            if len(metrics) == 3:
+                break
+        rendered = result.status
+        if metrics:
+            rendered = f"{rendered}; {', '.join(metrics)}"
+        evidence.append(
+            AssistantEvidence(
+                label=labels[result.name],
+                value=rendered,
+                source=result.source,
+            )
+        )
+    return evidence
 
 
 def _recommendations(context: dict[str, Any], locale: str) -> list[AssistantRecommendation]:
@@ -309,6 +367,7 @@ def _bedrock_answer(
     request: AssistantChatRequest,
     context: dict[str, Any],
     recommendations: list[AssistantRecommendation],
+    tool_results: list[AssistantToolResult],
 ) -> tuple[str, str]:
     model_id = os.getenv("AI_ASSISTANT_MODEL_ID", "").strip()
     if not model_id:
@@ -324,6 +383,7 @@ def _bedrock_answer(
         "question": _redact_text(request.message, limit=1600),
         "conversation": history,
         "untrusted_evidence": context,
+        "read_only_tool_results": [item.model_dump() for item in tool_results],
         "review_only_recommendations": [item.model_dump() for item in recommendations],
     }
     system_prompt = (
@@ -352,9 +412,17 @@ def _bedrock_answer(
     return _redact_text(answer, limit=6000), model_id
 
 
-def generate_assistant_response(request: AssistantChatRequest) -> AssistantChatResponse:
+def generate_assistant_response(
+    request: AssistantChatRequest,
+    *,
+    tool_results: list[dict[str, Any]] | None = None,
+) -> AssistantChatResponse:
     context = _sanitize_context(request)
-    evidence = _build_evidence(context, request.locale)
+    safe_tool_results = _sanitize_tool_results(tool_results)
+    evidence = _build_evidence(context, request.locale) + _tool_evidence(
+        safe_tool_results,
+        request.locale,
+    )
     recommendations = _recommendations(context, request.locale)
     answer = _local_answer(request, context)
     provider = os.getenv("AI_ASSISTANT_PROVIDER", "evidence").strip().lower()
@@ -368,7 +436,12 @@ def generate_assistant_response(request: AssistantChatRequest) -> AssistantChatR
 
     if provider in {"bedrock", "amazon-bedrock"}:
         try:
-            answer, model = _bedrock_answer(request, context, recommendations)
+            answer, model = _bedrock_answer(
+                request,
+                context,
+                recommendations,
+                safe_tool_results,
+            )
             response_provider = "amazon-bedrock"
             notice = None
         except Exception as exc:
@@ -393,5 +466,6 @@ def generate_assistant_response(request: AssistantChatRequest) -> AssistantChatR
         evidence=evidence,
         recommendations=recommendations,
         follow_up_prompts=_follow_up_prompts(context["kind"], request.locale),
+        tool_results=safe_tool_results,
         notice=notice,
     )

@@ -16,6 +16,7 @@ import {
   Languages,
   LayoutDashboard,
   ListTree,
+  LogOut,
   Moon,
   Network,
   Package,
@@ -223,6 +224,7 @@ type DryRunTarget = {
 type AuthIdentity = {
   authenticated: boolean;
   authMode: "deny" | "lab" | "trusted_headers";
+  logoutSupported: boolean;
   email: string;
   groups: string[];
   roles: string[];
@@ -637,6 +639,7 @@ const DEFAULT_SUMMARY: Summary = {
 const DEFAULT_AUTH_IDENTITY: AuthIdentity = {
   authenticated: false,
   authMode: "deny",
+  logoutSupported: false,
   email: "",
   groups: [],
   roles: [],
@@ -1994,30 +1997,46 @@ function Shell({
                 Kibana
               </span>
             )}
-            <span
-              className="user-chip"
-              title={
-                dashboard.authIdentity.roles.length > 0
-                  ? dashboard.authIdentity.roles.join(", ")
-                  : t("No portal role")
-              }
-            >
-              <Icon name="user" />
-              <span>
-                <strong>
-                  {dashboard.authIdentity.email ||
-                    (dashboard.authIdentity.authenticated
-                      ? t("Authenticated user")
-                      : t("Read-only session"))}
-                </strong>
-                <small>
-                  {dashboard.authIdentity.roles[0] ||
-                    (dashboard.authIdentity.authenticated
-                      ? t("Authenticated")
-                      : t("Authentication pending"))}
-                </small>
+            {dashboard.authIdentity.authenticated && dashboard.authIdentity.logoutSupported ? (
+              <a
+                className="user-chip user-chip--logout"
+                href="/oauth2/sign_out?rd=/"
+                aria-label={t("Sign out")}
+                title={t("Sign out")}
+              >
+                <Icon name="user" />
+                <span>
+                  <strong>{dashboard.authIdentity.email || t("Authenticated user")}</strong>
+                  <small>{dashboard.authIdentity.roles[0] || t("Authenticated")}</small>
+                </span>
+                <LogOut className="user-chip__logout" size={15} aria-hidden="true" />
+              </a>
+            ) : (
+              <span
+                className="user-chip user-chip--identity"
+                title={
+                  dashboard.authIdentity.roles.length > 0
+                    ? dashboard.authIdentity.roles.join(", ")
+                    : t("No portal role")
+                }
+              >
+                <Icon name="user" />
+                <span>
+                  <strong>
+                    {dashboard.authIdentity.email ||
+                      (dashboard.authIdentity.authenticated
+                        ? t("Authenticated user")
+                        : t("Read-only session"))}
+                  </strong>
+                  <small>
+                    {dashboard.authIdentity.roles[0] ||
+                      (dashboard.authIdentity.authenticated
+                        ? t("Authenticated")
+                        : t("Authentication pending"))}
+                  </small>
+                </span>
               </span>
-            </span>
+            )}
           </div>
         </header>
         <main className="dashboard">{children}</main>
@@ -4635,6 +4654,7 @@ function normalizeAuthIdentity(value: unknown): AuthIdentity {
   return {
     authenticated: Boolean(source.authenticated),
     authMode,
+    logoutSupported: Boolean(source.logout_supported ?? source.logoutSupported),
     email: asText(source.email),
     groups: asArray(source.groups).map((item) => asText(item)).filter(Boolean),
     roles: asArray(source.roles).map((item) => asText(item)).filter(Boolean),

@@ -103,6 +103,11 @@ resource "terraform_data" "guardrails" {
     }
 
     precondition {
+      condition     = contains(local.alb_availability_zones, data.aws_subnet.portal[0].availability_zone)
+      error_message = "portal_alb_subnet_ids must enable the Availability Zone that contains the portal EC2 target."
+    }
+
+    precondition {
       condition     = local.portal_target_security_group_id != null
       error_message = "The portal target must have an attached security group or portal_target_security_group_id must be supplied."
     }
@@ -451,6 +456,37 @@ resource "aws_vpc_security_group_ingress_rule" "keycloak_https" {
   ip_protocol       = "tcp"
   cidr_ipv4         = strcontains(each.value.cidr, ":") ? null : each.value.cidr
   cidr_ipv6         = strcontains(each.value.cidr, ":") ? each.value.cidr : null
+}
+
+resource "aws_eip" "portal_egress" {
+  count = local.keycloak_edge_enabled ? 1 : 0
+
+  domain = "vpc"
+
+  tags = merge(local.common_tags, { Name = "${var.name_prefix}-portal-egress" })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal" {
+  for_each = local.keycloak_edge_enabled ? toset(data.aws_lb.keycloak[0].security_groups) : toset([])
+
+  security_group_id = each.value
+  description       = "Keycloak HTTPS from the Security Portal static egress"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  cidr_ipv4         = "${aws_eip.portal_egress[0].public_ip}/32"
+
+  depends_on = [terraform_data.guardrails]
+}
+
+resource "aws_eip_association" "portal_egress" {
+  count = local.keycloak_edge_enabled ? 1 : 0
+
+  allocation_id       = aws_eip.portal_egress[0].id
+  instance_id         = data.aws_instance.portal[0].id
+  allow_reassociation = true
+
+  depends_on = [aws_vpc_security_group_ingress_rule.keycloak_https_from_portal]
 }
 
 resource "aws_lb_listener" "keycloak_https" {

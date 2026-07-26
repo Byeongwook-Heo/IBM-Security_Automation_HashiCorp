@@ -11,7 +11,7 @@ import sqlite3
 from typing import Any, Protocol
 from uuid import uuid4
 
-from .case_management import case_db_path_from_env
+from .case_management import _sqlite_initialization_lock, case_db_path_from_env
 from .models import AutomationApprovalRequest, AutomationCreateRequest
 from .safe_data import redact_text, sanitize_data
 
@@ -159,43 +159,44 @@ class AutomationService:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            if self.path != ":memory:":
-                connection.execute("PRAGMA journal_mode = WAL")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS automation_requests (
-                    id TEXT PRIMARY KEY,
-                    action_id TEXT NOT NULL,
-                    target_id TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    requester TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    payload_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    first_approver TEXT,
-                    first_approved_at TEXT,
-                    second_approver TEXT,
-                    second_approved_at TEXT,
-                    rejected_by TEXT,
-                    rejected_at TEXT,
-                    dispatch_receipt_json TEXT,
-                    UNIQUE(requester, idempotency_key)
-                );
-                CREATE INDEX IF NOT EXISTS idx_automation_status
-                    ON automation_requests(status);
-                CREATE TABLE IF NOT EXISTS automation_audit (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    request_id TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    details_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
+        with _sqlite_initialization_lock(self.path):
+            with self._connect() as connection:
+                if self.path != ":memory:":
+                    connection.execute("PRAGMA journal_mode = WAL")
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS automation_requests (
+                        id TEXT PRIMARY KEY,
+                        action_id TEXT NOT NULL,
+                        target_id TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        requester TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        first_approver TEXT,
+                        first_approved_at TEXT,
+                        second_approver TEXT,
+                        second_approved_at TEXT,
+                        rejected_by TEXT,
+                        rejected_at TEXT,
+                        dispatch_receipt_json TEXT,
+                        UNIQUE(requester, idempotency_key)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_automation_status
+                        ON automation_requests(status);
+                    CREATE TABLE IF NOT EXISTS automation_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        request_id TEXT NOT NULL,
+                        actor TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        details_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    """
+                )
 
     @staticmethod
     def _canonical_action(action_id: str) -> str:

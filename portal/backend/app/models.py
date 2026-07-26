@@ -127,6 +127,7 @@ class ObservabilityLinksResponse(BaseModel):
 class AuthMeResponse(BaseModel):
     authenticated: bool
     auth_mode: Literal["deny", "lab", "trusted_headers"]
+    logout_supported: bool = False
     email: str | None = None
     groups: list[str] = Field(default_factory=list)
     roles: list[str] = Field(default_factory=list)

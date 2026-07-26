@@ -8,6 +8,10 @@ PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-09c656a6f462df4f2}"
 PORTAL_TARGET_SECURITY_GROUP_ID="${PORTAL_TARGET_SECURITY_GROUP_ID:-}"
 PORTAL_EDGE_SUBNET_IDS="${PORTAL_EDGE_SUBNET_IDS:-}"
 PORTAL_CERTIFICATE_ARN="${PORTAL_CERTIFICATE_ARN:-}"
+PORTAL_CERTIFICATE_ARN_EXPLICIT="false"
+if [[ -n "$PORTAL_CERTIFICATE_ARN" ]]; then
+  PORTAL_CERTIFICATE_ARN_EXPLICIT="true"
+fi
 PORTAL_DOMAIN="${PORTAL_DOMAIN:-portal.byeongwook-heo.sbx.hashidemos.io}"
 KEYCLOAK_DOMAIN="${KEYCLOAK_DOMAIN:-keycloak.byeongwook-heo.sbx.hashidemos.io}"
 ROUTE53_ZONE_NAME="${ROUTE53_ZONE_NAME:-byeongwook-heo.sbx.hashidemos.io}"
@@ -141,8 +145,6 @@ for subnet in sorted(subnets, key=lambda item: (item.get("AvailabilityZone", "")
         continue
     selected.append(subnet_id)
     seen_az.add(az)
-    if len(selected) == 3:
-        break
 
 if len(selected) < 2:
     raise SystemExit("The portal VPC needs public subnets in at least two Availability Zones")
@@ -225,6 +227,15 @@ if [[ -f "$TF_DIR/.backend.s3.hcl" ]]; then
 fi
 terraform -chdir="$TF_DIR" init "${INIT_ARGS[@]}"
 terraform -chdir="$TF_DIR" fmt -check
+
+MANAGED_CERTIFICATE_ADDRESS="module.security_portal_access.aws_acm_certificate.edge[0]"
+terraform -chdir="$TF_DIR" state list > "$TEMP_DIR/terraform-state-list.txt"
+if [[ "$PORTAL_CERTIFICATE_ARN_EXPLICIT" != "true" ]] \
+  && grep -Fqx "$MANAGED_CERTIFICATE_ADDRESS" "$TEMP_DIR/terraform-state-list.txt"; then
+  export TF_VAR_security_portal_edge_create_certificate=true
+  unset TF_VAR_security_portal_edge_certificate_arn || true
+fi
+
 PLAN_FILE="$TEMP_DIR/security-portal-edge.tfplan"
 terraform -chdir="$TF_DIR" plan \
   -input=false \

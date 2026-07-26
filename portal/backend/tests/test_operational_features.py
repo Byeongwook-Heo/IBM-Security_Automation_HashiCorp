@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
+from multiprocessing import get_context
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import automation, main
 from app.automation import AutomationService
+from app.case_management import CaseRepository
 from app.evidence_tools import collect_assistant_evidence_tools
 from app.main import app
 from app.models import (
@@ -56,8 +59,46 @@ def _headers(email: str, groups: str = "SOC_ADMIN,SECURITY_ANALYST"):
     }
 
 
+def _initialize_store_in_process(store: str, database: str) -> int:
+    if store == "cases":
+        return len(CaseRepository(database).list())
+    return len(AutomationService(database).list())
+
+
+def test_case_and_automation_stores_initialize_concurrently(tmp_path):
+    database = str(tmp_path / "concurrent-initialization.db")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        case_future = executor.submit(CaseRepository, database)
+        automation_future = executor.submit(AutomationService, database)
+        case_repository = case_future.result(timeout=10)
+        automation_service = automation_future.result(timeout=10)
+
+    assert case_repository.list() == []
+    assert automation_service.list() == []
+
+
+def test_case_and_automation_stores_initialize_across_processes(tmp_path):
+    with ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn")) as executor:
+        for index in range(8):
+            database = str(tmp_path / f"process-initialization-{index}.db")
+            case_future = executor.submit(
+                _initialize_store_in_process,
+                "cases",
+                database,
+            )
+            automation_future = executor.submit(
+                _initialize_store_in_process,
+                "automation",
+                database,
+            )
+            assert case_future.result(timeout=15) == 0
+            assert automation_future.result(timeout=15) == 0
+
+
 def test_auth_me_reports_minimal_trusted_identity(monkeypatch):
     monkeypatch.setenv("PORTAL_AUTH_MODE", "trusted_headers")
+    monkeypatch.delenv("PORTAL_OIDC_ENABLED", raising=False)
 
     response = client.get(
         "/api/auth/me",
@@ -68,6 +109,7 @@ def test_auth_me_reports_minimal_trusted_identity(monkeypatch):
     assert response.json() == {
         "authenticated": True,
         "auth_mode": "trusted_headers",
+        "logout_supported": False,
         "email": "analyst@example.com",
         "groups": ["SECURITY_ANALYST", "AUDITOR"],
         "roles": ["SECURITY_ANALYST", "AUDITOR"],
@@ -83,10 +125,24 @@ def test_auth_me_deny_mode_returns_non_sensitive_anonymous_state(monkeypatch):
     assert response.json() == {
         "authenticated": False,
         "auth_mode": "deny",
+        "logout_supported": False,
         "email": None,
         "groups": [],
         "roles": [],
     }
+
+
+def test_auth_me_enables_logout_only_for_oidc_backed_trusted_headers(monkeypatch):
+    monkeypatch.setenv("PORTAL_AUTH_MODE", "trusted_headers")
+    monkeypatch.setenv("PORTAL_OIDC_ENABLED", "true")
+
+    response = client.get(
+        "/api/auth/me",
+        headers=_headers("analyst@example.com", "SECURITY_ANALYST"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["logout_supported"] is True
 
 
 def test_auth_me_rejects_missing_trusted_headers(monkeypatch):

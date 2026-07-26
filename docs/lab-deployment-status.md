@@ -1,21 +1,65 @@
 # Lab Deployment Status
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 ## Verification Boundary
 
-AWS, SSM, EKS, service endpoints, and the S3 Terraform backend were re-verified
-on 2026-07-14. The final full Terraform plan returned `No changes`.
+AWS, SSM, the portal and Keycloak load balancers, service endpoints, and the
+S3 Terraform backend were re-verified on 2026-07-26. The final targeted portal
+edge plan returned `No changes`.
 
-The current AWS session expired during the 2026-07-24 release preparation.
-The existing HTTP portal remains live; the new OIDC/HTTPS release is code
-ready and has not been applied. Continuous HCP Vault Radar source credentials
-and approved Alertmanager notification endpoints remain external inputs.
-StackStorm remains disabled and review-only by design.
+The Security Portal HTTPS/OIDC release is live. Continuous HCP Vault Radar
+source credentials and approved Alertmanager notification endpoints remain
+external inputs. StackStorm remains review-only by design; the portal exposes
+dry-run plans and does not execute remediation.
+
+## 2026-07-26 Live Release
+
+- Security Portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
+- Keycloak issuer:
+  `https://keycloak.byeongwook-heo.sbx.hashidemos.io/realms/master`
+- The dedicated portal ALB is active and its port 8080 EC2 target is healthy.
+- HTTP redirects to HTTPS, unauthenticated API access returns HTTP 401, and the
+  root OIDC flow redirects through Keycloak with the exact callback and PKCE
+  S256 configuration.
+- Keycloak uses the existing two-node deployment and shared RDS database. The
+  confidential `security-portal` client maps the `SECURITY_ANALYST` group.
+- The portal EC2 instance now uses the Terraform-managed static egress EIP
+  `52.78.14.203`. Keycloak permits that fixed `/32` for OIDC back-channel
+  traffic instead of relying on an instance-assigned public address.
+- OAuth2 Proxy stores encrypted sessions in an internal, non-persistent Redis
+  container that runs as the image's non-root user. Live logout QA reduced the
+  Redis session-key count from 1 to 0 and returned to the Keycloak login page.
+- All 20 portal sources loaded without an API failure after a hard browser
+  refresh. Direct read-only Vault metadata reported `initialized=true`,
+  `sealed=false`, and a live connection.
+- A persistent SQLite initialization race found in live QA was fixed with a
+  thread and process file lock plus cached service factories. The Cases API
+  now returns HTTP 200 after container replacement.
+- Runtime packaging now fixes its non-secret artifact umask and normalizes
+  application read/execute permissions before the non-root container build.
+  The deployed backend and frontend remained healthy after a clean rebuild.
+- Desktop `1440x900` and mobile `390x844` QA found no horizontal document
+  overflow or incoherent overlap. Hash-route navigation, Korean/English,
+  light/dark themes, Cases, evidence-grounded AI analysis, and a review-blocked
+  StackStorm dry-run were exercised through the authenticated UI.
+- The user identity chip now provides an accessible logout action. OAuth2
+  Proxy clears its session and calls the Keycloak OIDC end-session endpoint;
+  live QA returned to the Keycloak login page without automatic re-login or a
+  redirect loop.
+- The portal exposes a Kibana navigation link only when `KIBANA_URL` is an
+  approved HTTPS origin. The current CIDR-restricted HTTP lab endpoint remains
+  available for administration but is intentionally not linked from the HTTPS
+  portal until Kibana TLS is configured.
+- 170 Python tests and 9 frontend tests passed. The TypeScript production
+  build, Bash syntax, Terraform formatting and validation, and Git diff checks
+  also passed. Trivy reported no repository secret finding.
+- The post-deployment Terraform portal-edge plan returned `No changes`; no
+  resources were changed by that final verification.
 
 ## 2026-07-24 Release Candidate
 
-Code ready, locally verified, and awaiting a refreshed AWS session:
+Historical pre-deployment state:
 
 - Dedicated Portal HTTPS ALB, ACM, Route53, and existing Keycloak ALB HTTPS
   listener. `security-portal-test-alb` is explicitly rejected.
@@ -74,8 +118,13 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 
 ## Deployed
 
-- Security portal: `http://ec2-54-116-219-141.ap-northeast-2.compute.amazonaws.com:8080`
-- Kibana: `http://ec2-54-116-219-141.ap-northeast-2.compute.amazonaws.com:5601`
+- Security portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
+- Keycloak: `https://keycloak.byeongwook-heo.sbx.hashidemos.io`
+- Portal edge ALB: `ibm-hc-lab-portal-edge`
+- Portal ALB access-log bucket:
+  `ibm-hc-lab-p-alb-063455554839-ap-northeast-2`
+- Kibana direct lab endpoint (HTTP, CIDR-restricted, not linked from the
+  portal): `http://ec2-52-78-14-203.ap-northeast-2.compute.amazonaws.com:5601`
 - Elastic SIEM instance: `i-09c656a6f462df4f2`
 - Data security lab RDS endpoint: `ibm-hc-lab-data-security-lab.cx4i8kgqav98.ap-northeast-2.rds.amazonaws.com:5432`
 - Data security lab database: `security_lab`
@@ -316,7 +365,9 @@ external API reported database `ok`.
   remain excluded from Git.
 - The live application-risk run produced and indexed 202 schema-valid signals.
 - Browser QA passed at desktop and mobile breakpoints with no document overflow
-  or console warnings. Kibana resolves to the deployed Kibana host, and portal
-  dry-run actions remain blocked for review.
+  or console warnings. The 2026-07-14 build resolved Kibana to its HTTP lab
+  host; the 2026-07-26 HTTPS release supersedes that behavior and disables the
+  portal link until Kibana TLS is configured. Portal dry-run actions remain
+  blocked for review.
 - Live inventory found only `hc-base-*` or `hc-security-base-*` EC2 AMIs and no
   EKS EC2 node groups. The final remote-state Terraform plan returned exit 0.

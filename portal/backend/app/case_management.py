@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 from uuid import uuid4
 
 from .models import (
@@ -15,6 +18,25 @@ from .models import (
     CaseUpdateRequest,
 )
 from .safe_data import redact_text, sanitize_data
+
+_SQLITE_INITIALIZATION_LOCK = RLock()
+
+
+@contextmanager
+def _sqlite_initialization_lock(path: str) -> Iterator[None]:
+    with _SQLITE_INITIALIZATION_LOCK:
+        if path == ":memory:":
+            yield
+            return
+
+        descriptor = os.open(f"{path}.init.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def _now() -> datetime:
@@ -77,55 +99,56 @@ class CaseRepository:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            if self.path != ":memory:":
-                connection.execute("PRAGMA journal_mode = WAL")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS cases (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    severity TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    owner TEXT,
-                    sla_due_at TEXT,
-                    source_ref TEXT,
-                    created_by TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1
-                );
-                CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
-                CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner);
-                CREATE TABLE IF NOT EXISTS case_comments (
-                    id TEXT PRIMARY KEY,
-                    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                    author TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS case_evidence (
-                    id TEXT PRIMARY KEY,
-                    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                    evidence_type TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    reference TEXT,
-                    summary TEXT NOT NULL,
-                    observed_at TEXT,
-                    added_by TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS case_audit (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                    actor TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    details_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
+        with _sqlite_initialization_lock(self.path):
+            with self._connect() as connection:
+                if self.path != ":memory:":
+                    connection.execute("PRAGMA journal_mode = WAL")
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS cases (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        owner TEXT,
+                        sla_due_at TEXT,
+                        source_ref TEXT,
+                        created_by TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
+                    CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner);
+                    CREATE TABLE IF NOT EXISTS case_comments (
+                        id TEXT PRIMARY KEY,
+                        case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                        author TEXT NOT NULL,
+                        body TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS case_evidence (
+                        id TEXT PRIMARY KEY,
+                        case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                        evidence_type TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        reference TEXT,
+                        summary TEXT NOT NULL,
+                        observed_at TEXT,
+                        added_by TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS case_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                        actor TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        details_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    """
+                )
 
     @staticmethod
     def _sla_status(row: sqlite3.Row | dict[str, Any]) -> str:

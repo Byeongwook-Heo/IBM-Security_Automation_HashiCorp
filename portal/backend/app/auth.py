@@ -37,6 +37,7 @@ def _identity(
             return {
                 "authenticated": False,
                 "auth_mode": "deny",
+                "logout_supported": False,
                 "email": None,
                 "groups": [],
                 "roles": [],
@@ -69,6 +70,8 @@ def _identity(
     return {
         "authenticated": True,
         "auth_mode": auth_mode,
+        "logout_supported": auth_mode == "trusted_headers"
+        and _enabled("PORTAL_OIDC_ENABLED"),
         "email": safe_email,
         "groups": safe_groups,
         "roles": [group for group in safe_groups if group in ROLE_PERMISSIONS],

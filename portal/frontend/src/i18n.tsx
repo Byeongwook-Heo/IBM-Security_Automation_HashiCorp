@@ -63,6 +63,7 @@ const KOREAN_COPY: Record<string, string> = {
   "Platform operations": "플랫폼 운영",
   Environment: "환경",
   "Refresh telemetry": "텔레메트리 새로고침",
+  "Sign out": "로그아웃",
   "Runbook shortcuts": "런북 바로가기",
   "{count} API sources": "API 소스 {count}개",
   "Risk Summary": "위험 요약",

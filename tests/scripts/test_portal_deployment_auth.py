@@ -108,6 +108,13 @@ def test_nginx_uses_auth_request_and_overwrites_untrusted_identity_headers() -> 
     nginx = NGINX.read_text(encoding="utf-8")
 
     assert "auth_request __PORTAL_AUTH_REQUEST__;" in nginx
+    assert "absolute_redirect off;" in nginx
+    assert "proxy_buffer_size 16k;" in nginx
+    assert "proxy_buffers 8 16k;" in nginx
+    assert "proxy_busy_buffers_size 32k;" in nginx
+    assert "map $uri $portal_oauth2_redirect" in nginx
+    assert "/oauth2/sign_out /;" in nginx
+    assert "proxy_set_header X-Auth-Request-Redirect $portal_oauth2_redirect;" in nginx
     assert "auth_request_set $auth_user_email $upstream_http_x_auth_request_email;" in nginx
     assert "auth_request_set $auth_user_groups $upstream_http_x_auth_request_groups;" in nginx
     assert "location = /oauth2/auth" in nginx
@@ -154,16 +161,31 @@ def test_oauth2_proxy_is_pinned_private_and_uses_read_only_secret_files() -> Non
     assert 'chmod 600 "$INSTALL_DIR/oauth2-proxy.env"' in remote_script
     assert 'chmod 600 "$INSTALL_DIR/secrets/oidc-client-secret"' in remote_script
     assert 'chown 65532:65532 "$INSTALL_DIR/secrets/oidc-client-secret"' in remote_script
-    assert "--user 65532:65532" in remote_script
     assert "OAUTH2_PROXY_CLIENT_SECRET_FILE" in remote_script
     assert "OAUTH2_PROXY_COOKIE_SECRET_FILE" in remote_script
     assert "--config-test" in remote_script
     assert "OAUTH2_PROXY_SET_XAUTHREQUEST" in remote_script
     assert "OAUTH2_PROXY_PASS_ACCESS_TOKEN" in remote_script
     assert "OAUTH2_PROXY_INSECURE_OIDC_SKIP_NONCE" in remote_script
-    assert "printf 'OAUTH2_PROXY_SESSION_COOKIE_MINIMAL=%s\\n' 'false'" in remote_script
+    assert "OAUTH2_PROXY_FORCE_HTTPS" not in remote_script
+    assert "OAUTH2_PROXY_BACKEND_LOGOUT_URL" in remote_script
+    assert "protocol/openid-connect/logout?id_token_hint={id_token}" in remote_script
+    assert "--trusted-proxy-ip=172.16.0.0/12" in remote_script
+    assert 'command: ["--trusted-proxy-ip=172.16.0.0/12"]' in compose
+    assert "printf 'OAUTH2_PROXY_SCOPE=%s\\n' 'openid profile email'" in remote_script
+    assert "openid profile email groups" not in remote_script
+    assert "printf 'OAUTH2_PROXY_SESSION_STORE_TYPE=%s\\n' 'redis'" in remote_script
+    assert "redis://oauth2-session:6379/0" in remote_script
+    assert "OAUTH2_PROXY_SESSION_COOKIE_MINIMAL" not in remote_script
+    assert "image: redis:7.4-alpine" in compose
+    assert 'user: "999:1000"' in compose
+    assert "condition: service_healthy" in compose
+    assert "internal: true" in compose
+    assert "run --rm --no-deps oauth2-proxy" in remote_script
+    assert "PORTAL_OIDC_ENABLED" in remote_script
     assert "wget -q -O /dev/null http://oauth2-proxy:4180/ping" in remote_script
     assert "--entrypoint nginx" in remote_script
+    assert '--add-host "host.docker.internal:host-gateway"' in remote_script
     assert "nginx:1.27-alpine" in remote_script
     assert "\n  -t\n" in remote_script
 
@@ -222,6 +244,26 @@ def test_portal_artifact_is_verified_before_remote_deploy() -> None:
     assert deployer.index("sha256sum -c -") < deployer.index('REMOTE_SCRIPT="$(')
     assert 'CHECKSUM_PATH="$ARTIFACT_PATH.sha256"' in package
     assert "checksum_path.write_text" in package
+    assert "umask 022" in package
+    assert 'chmod -R a+rX "$INSTALL_DIR/backend" "$INSTALL_DIR/frontend"' in (
+        ROOT / "scripts/remote-deploy-portal.sh.tmpl"
+    ).read_text(encoding="utf-8")
+    assert "aws ssm wait command-executed" not in deployer
+    assert "deadline=$((SECONDS + timeout + 30))" in deployer
+    assert "aws ssm cancel-command" in deployer
+
+
+def test_kibana_link_requires_an_approved_https_endpoint() -> None:
+    deployer = DEPLOYER.read_text(encoding="utf-8")
+    remote_script = REMOTE_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'KIBANA_URL="${KIBANA_URL:-}"' in deployer
+    assert 'KIBANA_URL="http://$KIBANA_PUBLIC_DNS:5601"' not in deployer
+    assert "KIBANA_URL must use an approved HTTPS origin" in deployer
+    assert 'KIBANA_URL="__KIBANA_URL__"' in remote_script
+    assert 'https://*) KIBANA_URL="$KIBANA_CANDIDATE"' in remote_script
+    assert "KIBANA_URL must use an approved HTTPS origin" in remote_script
+    assert "printf 'KIBANA_URL=%s\\n' \"$KIBANA_URL\"" in remote_script
 
 
 def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> None:
@@ -239,6 +281,16 @@ def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> N
     assert 'lower(trimspace(var.keycloak_alb_name)) != "security-portal-test-alb"' in (
         ROOT / "terraform/modules/security-portal-access/variables.tf"
     ).read_text(encoding="utf-8")
+    assert "portal_public_ipv4_cidr" not in module
+    assert 'resource "aws_eip" "portal_egress"' in module
+    assert 'resource "aws_eip_association" "portal_egress"' in module
+    assert 'resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal"' in module
+    assert 'cidr_ipv4         = "${aws_eip.portal_egress[0].public_ip}/32"' in module
+    assert (
+        "contains(local.alb_availability_zones, "
+        "data.aws_subnet.portal[0].availability_zone)"
+        in module
+    )
     assert 'name = var.keycloak_alb_name' in module
     assert "security-portal-test-alb" not in module
     assert 'resource "aws_acm_certificate" "edge"' in module

@@ -45,6 +45,11 @@ output "portal_alb_access_log_bucket" {
   value       = try(aws_s3_bucket.portal_access_logs[0].id, null)
 }
 
+output "portal_egress_public_ip" {
+  description = "Static Elastic IP used by the portal for Keycloak back-channel traffic."
+  value       = try(aws_eip.portal_egress[0].public_ip, null)
+}
+
 output "keycloak_alb_arn" {
   description = "Exact existing Keycloak ALB selected by name."
   value       = try(data.aws_lb.keycloak[0].arn, null)

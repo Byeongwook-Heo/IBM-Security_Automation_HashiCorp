@@ -25,6 +25,7 @@ INSTALL_DIR="/opt/security-portal"
 SECRET_FILE=""
 COMPOSE_DOWNLOAD=""
 OIDC_SECRET_JSON=""
+KIBANA_URL="__KIBANA_URL__"
 
 # shellcheck disable=SC2329
 cleanup() {
@@ -69,6 +70,11 @@ systemctl enable --now docker
 mkdir -p "$INSTALL_DIR"
 rm -rf "${INSTALL_DIR:?}"/*
 tar -xzf /tmp/security-portal-runtime.tar.gz -C "$INSTALL_DIR"
+chmod -R a+rX "$INSTALL_DIR/backend" "$INSTALL_DIR/frontend"
+chmod a+r \
+  "$INSTALL_DIR/docker-compose.yml" \
+  "$INSTALL_DIR/filebeat.yml" \
+  "$INSTALL_DIR/nginx.conf"
 
 BACKEND_AUTH_MODE="$PORTAL_AUTH_MODE"
 COMPOSE_PROFILES=""
@@ -221,11 +227,15 @@ if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     printf 'OAUTH2_PROXY_COOKIE_SECRET_FILE=%s\n' '/run/secrets/oidc-cookie-secret'
     printf 'OAUTH2_PROXY_OIDC_ISSUER_URL=%s\n' "$PORTAL_OIDC_ISSUER_URL"
     printf 'OAUTH2_PROXY_REDIRECT_URL=%s\n' "$PORTAL_PUBLIC_URL/oauth2/callback"
+    printf 'OAUTH2_PROXY_BACKEND_LOGOUT_URL=%s\n' \
+      "$PORTAL_OIDC_ISSUER_URL/protocol/openid-connect/logout?id_token_hint={id_token}"
     printf 'OAUTH2_PROXY_ALLOWED_GROUPS=%s\n' "$PORTAL_OIDC_ALLOWED_GROUP"
     printf 'OAUTH2_PROXY_OIDC_GROUPS_CLAIM=%s\n' "$PORTAL_OIDC_GROUPS_CLAIM"
-    printf 'OAUTH2_PROXY_SCOPE=%s\n' 'openid profile email groups'
+    printf 'OAUTH2_PROXY_SCOPE=%s\n' 'openid profile email'
     printf 'OAUTH2_PROXY_EMAIL_DOMAINS=%s\n' '*'
     printf 'OAUTH2_PROXY_UPSTREAMS=%s\n' 'static://202'
+    printf 'OAUTH2_PROXY_SESSION_STORE_TYPE=%s\n' 'redis'
+    printf 'OAUTH2_PROXY_REDIS_CONNECTION_URL=%s\n' 'redis://oauth2-session:6379/0'
     printf 'OAUTH2_PROXY_HTTP_ADDRESS=%s\n' '0.0.0.0:4180'
     printf 'OAUTH2_PROXY_CODE_CHALLENGE_METHOD=%s\n' 'S256'
     printf 'OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL=%s\n' 'false'
@@ -233,7 +243,6 @@ if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     printf 'OAUTH2_PROXY_INSECURE_OIDC_SKIP_NONCE=%s\n' 'false'
     printf 'OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=%s\n' 'false'
     printf 'OAUTH2_PROXY_REVERSE_PROXY=%s\n' 'true'
-    printf 'OAUTH2_PROXY_FORCE_HTTPS=%s\n' 'true'
     printf 'OAUTH2_PROXY_SET_XAUTHREQUEST=%s\n' 'true'
     printf 'OAUTH2_PROXY_SKIP_AUTH_STRIP_HEADERS=%s\n' 'true'
     printf 'OAUTH2_PROXY_PASS_ACCESS_TOKEN=%s\n' 'false'
@@ -247,7 +256,6 @@ if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     printf 'OAUTH2_PROXY_COOKIE_SAMESITE=%s\n' 'lax'
     printf 'OAUTH2_PROXY_COOKIE_EXPIRE=%s\n' '8h'
     printf 'OAUTH2_PROXY_COOKIE_REFRESH=%s\n' '1h'
-    printf 'OAUTH2_PROXY_SESSION_COOKIE_MINIMAL=%s\n' 'false'
     printf 'OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=%s\n' 'true'
     printf 'OAUTH2_PROXY_SHOW_DEBUG_ON_ERROR=%s\n' 'false'
     printf 'OAUTH2_PROXY_SILENCE_PING_LOGGING=%s\n' 'true'
@@ -446,6 +454,29 @@ case "$FILEBEAT_CONFIG_API_KEY" in
     ;;
 esac
 
+if [ -z "$KIBANA_URL" ]; then
+  KIBANA_CANDIDATE="$(printf '%s' "$SECRET_JSON" | jq -r '.kibana_url // empty')"
+  case "$KIBANA_CANDIDATE" in
+    https://*) KIBANA_URL="$KIBANA_CANDIDATE" ;;
+  esac
+fi
+
+case "$KIBANA_URL" in
+  "") ;;
+  https://*)
+    case "$KIBANA_URL" in
+      *[[:space:]]*|*\"*|*"'"*)
+        echo "KIBANA_URL must not contain whitespace or quotes" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "KIBANA_URL must use an approved HTTPS origin" >&2
+    exit 1
+    ;;
+esac
+
 {
   printf 'ELASTIC_URL=%s\n' 'http://127.0.0.1:9200'
   printf 'ELASTIC_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_read_api_key // empty')"
@@ -460,12 +491,17 @@ esac
   printf 'ELASTIC_DS_APPLICATION_RISK=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.application_risk // "logs-security_application.risk-lab"')"
   printf 'ELASTIC_APPLICATION_RISK_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_application_risk_read_api_key // empty')"
   printf 'EKS_CLUSTER_NAME=%s\n' 'ibm-hc-lab-test-eks'
-  printf 'KIBANA_URL=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.kibana_url // empty')"
+  printf 'KIBANA_URL=%s\n' "$KIBANA_URL"
   printf 'GRAFANA_URL=%s\n' '__GRAFANA_URL__'
   printf 'PROMETHEUS_URL=%s\n' '__PROMETHEUS_URL__'
   printf 'LOKI_URL=%s\n' '__LOKI_URL__'
   printf 'TEMPO_URL=%s\n' '__TEMPO_URL__'
   printf 'PORTAL_AUTH_MODE=%s\n' "$BACKEND_AUTH_MODE"
+  if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
+    printf 'PORTAL_OIDC_ENABLED=%s\n' 'true'
+  else
+    printf 'PORTAL_OIDC_ENABLED=%s\n' 'false'
+  fi
   printf 'CASE_DB_PATH=%s\n' '/var/lib/security-portal/cases.db'
   if [ "$ENABLE_VAULT_DIRECT" = "true" ]; then
     printf 'VAULT_ADDR=%s\n' "$VAULT_ADDR"
@@ -498,18 +534,21 @@ unset FILEBEAT_CONFIG_API_KEY
 
 if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
   docker pull quay.io/oauth2-proxy/oauth2-proxy:v7.15.3 >/dev/null
-  docker run --rm \
-    --user 65532:65532 \
-    --env-file "$INSTALL_DIR/oauth2-proxy.env" \
-    --mount "type=bind,src=$INSTALL_DIR/secrets/oidc-client-secret,dst=/run/secrets/oidc-client-secret,readonly" \
-    --mount "type=bind,src=$INSTALL_DIR/secrets/oidc-cookie-secret,dst=/run/secrets/oidc-cookie-secret,readonly" \
-    quay.io/oauth2-proxy/oauth2-proxy:v7.15.3 \
+  docker pull redis:7.4-alpine >/dev/null
+  COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose \
+    -f "$INSTALL_DIR/docker-compose.yml" \
+    up -d --wait --wait-timeout 30 oauth2-session
+  COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose \
+    -f "$INSTALL_DIR/docker-compose.yml" \
+    run --rm --no-deps oauth2-proxy \
+    --trusted-proxy-ip=172.16.0.0/12 \
     --config-test
 fi
 
 docker pull nginx:1.27-alpine >/dev/null
 docker run --rm \
   --entrypoint nginx \
+  --add-host "host.docker.internal:host-gateway" \
   --mount "type=bind,src=$INSTALL_DIR/nginx.conf,dst=/etc/nginx/conf.d/default.conf,readonly" \
   nginx:1.27-alpine \
   -t
@@ -545,7 +584,8 @@ while [ "$attempt" -le 30 ]; do
   oauth2_ready=true
   if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     oauth2_ready=false
-    if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-proxy \
+    if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-session \
+      && COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-proxy \
       && COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" exec -T frontend \
         wget -q -O /dev/null http://oauth2-proxy:4180/ping; then
       oauth2_ready=true

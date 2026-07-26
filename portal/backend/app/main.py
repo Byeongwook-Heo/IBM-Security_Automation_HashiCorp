@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import lru_cache
 import os
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
@@ -16,7 +17,7 @@ from .automation import (
     AutomationService,
     AutomationStateError,
 )
-from .case_management import CaseNotFoundError, CaseRepository
+from .case_management import CaseNotFoundError, CaseRepository, case_db_path_from_env
 from .evidence_tools import collect_assistant_evidence_tools
 from .models import (
     AssistantChatRequest,
@@ -77,12 +78,22 @@ def _elastic_repo() -> ElasticRepository | None:
     return elastic if elastic.configured else None
 
 
+@lru_cache(maxsize=16)
+def _case_repository_for_path(path: str) -> CaseRepository:
+    return CaseRepository(path)
+
+
 def _case_repository() -> CaseRepository:
-    return CaseRepository.from_env()
+    return _case_repository_for_path(case_db_path_from_env())
+
+
+@lru_cache(maxsize=16)
+def _automation_service_for_path(path: str) -> AutomationService:
+    return AutomationService(path)
 
 
 def _automation_service() -> AutomationService:
-    return AutomationService.from_env()
+    return _automation_service_for_path(case_db_path_from_env())
 
 
 def _safe_observability_url(value: str | None) -> str | None:

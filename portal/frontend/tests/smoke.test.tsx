@@ -57,6 +57,16 @@ describe("security portal", () => {
           });
         }
 
+        if (url.pathname === "/api/auth/me") {
+          return jsonResponse({
+            authenticated: true,
+            auth_mode: "trusted_headers",
+            logout_supported: true,
+            email: "analyst@example.com",
+            groups: ["SECURITY_ANALYST"],
+            roles: ["SECURITY_ANALYST"],
+          });
+        }
         if (url.pathname === "/api/dashboard/summary") {
           return jsonResponse({
             security_score: 80,
@@ -106,6 +116,10 @@ describe("security portal", () => {
     expect(screen.getByRole("link", { name: "Kibana" })).toHaveAttribute(
       "href",
       "https://kibana.example.test",
+    );
+    expect(screen.getByRole("link", { name: "Sign out" })).toHaveAttribute(
+      "href",
+      "/oauth2/sign_out?rd=/",
     );
 
     fireEvent.click(screen.getByRole("link", { name: "Observability" }));
@@ -172,6 +186,7 @@ describe("security portal", () => {
 
     expect(await screen.findByText("Security score")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Kibana" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sign out" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "Cloud Optimization" }));
     expect(window.location.hash).toBe("#/cloud-optimization");

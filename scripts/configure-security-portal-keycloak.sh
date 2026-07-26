@@ -106,7 +106,7 @@ aws secretsmanager get-secret-value \
   --output text > "$ADMIN_JSON"
 
 ADMIN_USERNAME="$(jq -r '.username // .admin_username // empty' "$ADMIN_JSON")"
-jq -r '.password // .admin_password // empty' "$ADMIN_JSON" > "$ADMIN_PASSWORD_FILE"
+jq -rj '.password // .admin_password // empty' "$ADMIN_JSON" > "$ADMIN_PASSWORD_FILE"
 if [[ -z "$ADMIN_USERNAME" || ! -s "$ADMIN_PASSWORD_FILE" ]]; then
   echo "Keycloak admin secret must contain username/password fields" >&2
   exit 1
@@ -271,10 +271,13 @@ if [[ -z "$MAPPER_UUID" ]]; then
     "$TEMP_DIR/mapper-create.out" \
     "$MAPPER_DOCUMENT"
 else
+  MAPPER_UPDATE_DOCUMENT="$TEMP_DIR/groups-mapper-update.json"
+  jq --arg id "$MAPPER_UUID" '. + {id: $id}' \
+    "$MAPPER_DOCUMENT" > "$MAPPER_UPDATE_DOCUMENT"
   kc_request PUT \
     "/admin/realms/$KEYCLOAK_REALM/clients/$CLIENT_UUID/protocol-mappers/models/$MAPPER_UUID" \
     "$TEMP_DIR/mapper-update.out" \
-    "$MAPPER_DOCUMENT"
+    "$MAPPER_UPDATE_DOCUMENT"
 fi
 
 GROUPS_JSON="$TEMP_DIR/groups.json"

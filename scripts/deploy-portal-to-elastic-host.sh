@@ -11,6 +11,7 @@ GRAFANA_URL="${GRAFANA_URL:-}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 LOKI_URL="${LOKI_URL:-}"
 TEMPO_URL="${TEMPO_URL:-}"
+KIBANA_URL="${KIBANA_URL:-}"
 ENABLE_ELASTIC_PEER_PROXY="${ENABLE_ELASTIC_PEER_PROXY:-true}"
 PORTAL_AUTH_MODE="${PORTAL_AUTH_MODE:-deny}"
 PORTAL_HTTPS_MODE="${PORTAL_HTTPS_MODE:-disabled}"
@@ -306,6 +307,11 @@ for observability_url in "$GRAFANA_URL" "$PROMETHEUS_URL" "$LOKI_URL" "$TEMPO_UR
   fi
 done
 
+if [[ -n "$KIBANA_URL" && ! "$KIBANA_URL" =~ ^https://[^[:space:]\"\']+$ ]]; then
+  echo "KIBANA_URL must use an approved HTTPS origin without whitespace or quotes" >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ARTIFACT_PATH="$("$ROOT_DIR/scripts/package-portal-runtime.sh" | tail -n 1)"
@@ -354,6 +360,7 @@ run_ssm() {
   local invocation_json
   local status
   local response_code
+  local deadline
 
   params_file="$(mktemp)"
   jq -n --arg cmd "$command" --arg timeout "$timeout" '{commands: [$cmd], executionTimeout: [$timeout]}' > "$params_file"
@@ -367,16 +374,36 @@ run_ssm() {
     --output text)"
   rm -f "$params_file"
 
-  aws ssm wait command-executed --region "$REGION" --command-id "$command_id" --instance-id "$INSTANCE_ID" || true
-  invocation_json="$(aws ssm get-command-invocation \
-    --region "$REGION" \
-    --command-id "$command_id" \
-    --instance-id "$INSTANCE_ID" \
-    --query '{Status:Status,ResponseCode:ResponseCode,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
-    --output json)"
+  deadline=$((SECONDS + timeout + 30))
+  invocation_json=""
+  status="Pending"
+  while (( SECONDS < deadline )); do
+    if invocation_json="$(aws ssm get-command-invocation \
+      --region "$REGION" \
+      --command-id "$command_id" \
+      --instance-id "$INSTANCE_ID" \
+      --query '{Status:Status,ResponseCode:ResponseCode,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
+      --output json 2>/dev/null)"; then
+      status="$(printf '%s' "$invocation_json" | jq -r '.Status')"
+      case "$status" in
+        Pending|InProgress|Delayed|Cancelling)
+          ;;
+        *)
+          break
+          ;;
+      esac
+    fi
+    sleep 3
+  done
+
+  if [[ -z "$invocation_json" || "$status" == "Pending" || "$status" == "InProgress" || "$status" == "Delayed" || "$status" == "Cancelling" ]]; then
+    aws ssm cancel-command --region "$REGION" --command-id "$command_id" >/dev/null 2>&1 || true
+    echo "SSM command $command_id exceeded its ${timeout}s execution window" >&2
+    return 1
+  fi
+
   printf '%s\n' "$invocation_json"
 
-  status="$(printf '%s' "$invocation_json" | jq -r '.Status')"
   response_code="$(printf '%s' "$invocation_json" | jq -r '.ResponseCode')"
   if [[ "$status" != "Success" || "$response_code" != "0" ]]; then
     return 1
@@ -408,6 +435,7 @@ REMOTE_SCRIPT="$(
   PROMETHEUS_URL="$PROMETHEUS_URL" \
   LOKI_URL="$LOKI_URL" \
   TEMPO_URL="$TEMPO_URL" \
+  KIBANA_URL="$KIBANA_URL" \
   ENABLE_ELASTIC_PEER_PROXY="$ENABLE_ELASTIC_PEER_PROXY" \
   PORTAL_AUTH_MODE="$PORTAL_AUTH_MODE" \
   PORTAL_HTTPS_MODE="$PORTAL_HTTPS_MODE" \
@@ -445,6 +473,7 @@ for key in (
     "PROMETHEUS_URL",
     "LOKI_URL",
     "TEMPO_URL",
+    "KIBANA_URL",
     "ENABLE_ELASTIC_PEER_PROXY",
     "PORTAL_AUTH_MODE",
     "PORTAL_HTTPS_MODE",

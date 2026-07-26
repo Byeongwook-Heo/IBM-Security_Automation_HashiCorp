@@ -1051,10 +1051,26 @@ caption {
   padding: 0 11px;
 }
 
+.user-chip--logout {
+  cursor: pointer;
+}
+
+.topbar .user-chip--logout:hover {
+  background: var(--blue-bg);
+  border-color: var(--selection-border);
+  color: var(--blue-ink);
+}
+
 .user-chip > span {
   display: grid;
   gap: 1px;
   min-width: 0;
+}
+
+.user-chip__logout {
+  color: var(--subtle);
+  flex: 0 0 auto;
+  margin-left: 2px;
 }
 
 .user-chip strong,
@@ -3678,8 +3694,25 @@ tbody tr:last-child td {
     max-width: 100%;
   }
 
-  .topbar-actions .user-chip {
+  .topbar-actions .user-chip--identity {
     display: none;
+  }
+
+  .topbar-actions .user-chip--logout {
+    height: 36px;
+    justify-content: center;
+    min-height: 36px;
+    padding: 0;
+    width: 36px;
+  }
+
+  .topbar-actions .user-chip--logout > svg:first-child,
+  .topbar-actions .user-chip--logout > span {
+    display: none;
+  }
+
+  .topbar-actions .user-chip--logout .user-chip__logout {
+    margin-left: 0;
   }
 
   .summary-grid {

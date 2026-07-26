@@ -35,6 +35,20 @@ def test_stack_deployment_is_plan_only_until_explicitly_enabled() -> None:
     assert "PORTAL_AUTH_MODE=oidc" in script
     assert "PORTAL_HTTPS_MODE=alb" in script
     assert "ENABLE_VAULT_DIRECT" in script
+    assert (
+        'MANAGED_CERTIFICATE_ADDRESS="module.security_portal_access.'
+        'aws_acm_certificate.edge[0]"'
+        in script
+    )
+    assert 'state list > "$TEMP_DIR/terraform-state-list.txt"' in script
+    assert (
+        'grep -Fqx "$MANAGED_CERTIFICATE_ADDRESS" '
+        '"$TEMP_DIR/terraform-state-list.txt"'
+        in script
+    )
+    assert 'PORTAL_CERTIFICATE_ARN_EXPLICIT="false"' in script
+    assert 'PORTAL_CERTIFICATE_ARN_EXPLICIT="true"' in script
+    assert '[[ "$PORTAL_CERTIFICATE_ARN_EXPLICIT" != "true" ]]' in script
 
 
 def test_keycloak_bootstrap_keeps_runtime_secrets_out_of_output() -> None:
@@ -47,6 +61,12 @@ def test_keycloak_bootstrap_keeps_runtime_secrets_out_of_output() -> None:
     assert "put-resource-policy" in script
     assert "--block-public-policy" in script
     assert "--secret-string \"file://$OIDC_SECRET_JSON\"" in script
+    assert (
+        "jq -rj '.password // .admin_password // empty' \"$ADMIN_JSON\""
+        in script
+    )
+    assert "'. + {id: $id}'" in script
+    assert '"$MAPPER_UPDATE_DOCUMENT"' in script
     assert not re.search(r"echo .*\$(?:CLIENT_SECRET|COOKIE_SECRET|ACCESS_TOKEN)", script)
     assert "client_secret:" not in "\n".join(
         line for line in script.splitlines() if line.lstrip().startswith("echo ")

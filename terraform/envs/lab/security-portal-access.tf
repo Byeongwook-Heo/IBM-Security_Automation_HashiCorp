@@ -116,3 +116,7 @@ output "security_portal_edge_certificate_arn" {
 output "security_portal_edge_access_log_bucket" {
   value = module.security_portal_access.portal_alb_access_log_bucket
 }
+
+output "security_portal_edge_egress_public_ip" {
+  value = module.security_portal_access.portal_egress_public_ip
+}

@@ -9,6 +9,8 @@ REMOTE_SCRIPT = ROOT / "scripts/remote-deploy-portal.sh.tmpl"
 NGINX = ROOT / "portal/deploy/nginx.conf"
 COMPOSE = ROOT / "portal/deploy/docker-compose.yml"
 EDGE_MODULE = ROOT / "terraform/modules/security-portal-access/main.tf"
+EDGE_VARIABLES = ROOT / "terraform/modules/security-portal-access/variables.tf"
+EDGE_OUTPUTS = ROOT / "terraform/modules/security-portal-access/outputs.tf"
 EDGE_ENV = ROOT / "terraform/envs/lab/security-portal-access.tf"
 
 
@@ -95,6 +97,8 @@ def test_oidc_deployment_requires_https_keycloak_and_secrets_manager() -> None:
     deployer = DEPLOYER.read_text(encoding="utf-8")
     remote_script = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
+    assert "ubuntu\\.com)#https://\\1#g" in remote_script
+    assert "Ubuntu APT sources must use HTTPS" in remote_script
     assert 'PORTAL_HTTPS_MODE="${PORTAL_HTTPS_MODE:-disabled}"' in deployer
     assert "PORTAL_AUTH_MODE=oidc requires PORTAL_HTTPS_MODE=alb" in deployer
     assert "PORTAL_OIDC_ISSUER_URL must be a valid HTTPS Keycloak issuer URL" in deployer
@@ -179,7 +183,9 @@ def test_oauth2_proxy_is_pinned_private_and_uses_read_only_secret_files() -> Non
     assert "OAUTH2_PROXY_SESSION_COOKIE_MINIMAL" not in remote_script
     assert "image: redis:7.4-alpine" in compose
     assert 'user: "999:1000"' in compose
-    assert "condition: service_healthy" in compose
+    assert "condition: service_healthy" not in oauth_service
+    assert 'if [ "$USE_LOCAL_REDIS" = "true" ]; then' in remote_script
+    assert "up -d --wait --wait-timeout 30 oauth2-session" in remote_script
     assert "internal: true" in compose
     assert "run --rm --no-deps oauth2-proxy" in remote_script
     assert "PORTAL_OIDC_ENABLED" in remote_script
@@ -225,9 +231,14 @@ def test_vault_approle_values_are_fetched_only_on_the_remote_host() -> None:
 
 
 def test_case_database_persists_across_backend_recreation() -> None:
+    deployer = DEPLOYER.read_text(encoding="utf-8")
     compose = COMPOSE.read_text(encoding="utf-8")
     remote_script = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
+    assert "^[A-Za-z0-9/_+=.@:!-]+$" in deployer
+    assert "CASE_DATABASE_HOST is required for an RDS-managed secret" in deployer
+    assert 'CASE_DATABASE_HOST="__CASE_DATABASE_HOST__"' in remote_script
+    assert 'value.get("host") or os.environ["CASE_DATABASE_HOST"]' in remote_script
     backend_service = compose.split("  backend:", 1)[1].split("  oauth2-proxy:", 1)[0]
     assert "portal-backend-data:/var/lib/security-portal" in backend_service
     assert "\n  portal-backend-data:\n" in compose
@@ -282,10 +293,11 @@ def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> N
         ROOT / "terraform/modules/security-portal-access/variables.tf"
     ).read_text(encoding="utf-8")
     assert "portal_public_ipv4_cidr" not in module
+    assert 'data "aws_eip" "portal_egress"' in module
     assert 'resource "aws_eip" "portal_egress"' in module
     assert 'resource "aws_eip_association" "portal_egress"' in module
     assert 'resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal"' in module
-    assert 'cidr_ipv4         = "${aws_eip.portal_egress[0].public_ip}/32"' in module
+    assert 'cidr_ipv4         = "${local.portal_egress_public_ip}/32"' in module
     assert (
         "contains(local.alb_availability_zones, "
         "data.aws_subnet.portal[0].availability_zone)"
@@ -295,6 +307,7 @@ def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> N
     assert "security-portal-test-alb" not in module
     assert 'resource "aws_acm_certificate" "edge"' in module
     assert 'resource "aws_lb" "portal"' in module
+    assert module.count("create_before_destroy = true") >= 2
     assert 'resource "aws_lb_listener" "keycloak_https"' in module
     assert 'resource "aws_lb_listener_rule" "keycloak_http_redirect"' in module
     assert 'resource "aws_route53_record" "portal"' in module
@@ -308,6 +321,51 @@ def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> N
     assert "ELBSecurityPolicy-TLS13-1-2-2021-06" in module
 
 
+def test_https_edge_reuses_an_external_eip_without_creating_a_duplicate() -> None:
+    module = EDGE_MODULE.read_text(encoding="utf-8")
+    variables = EDGE_VARIABLES.read_text(encoding="utf-8")
+    outputs = EDGE_OUTPUTS.read_text(encoding="utf-8")
+    env = EDGE_ENV.read_text(encoding="utf-8")
+
+    assert 'variable "portal_egress_allocation_id"' in variables
+    assert 'default     = null' in variables
+    assert '"^eipalloc-[0-9a-f]{8}([0-9a-f]{9})?$"' in variables
+    assert module.count('resource "aws_eip" "portal_egress"') == 1
+    assert module.count('data "aws_eip" "portal_egress"') == 1
+    assert (
+        "local.keycloak_edge_enabled && "
+        "local.supplied_portal_egress_allocation_id == null ? 1 : 0"
+    ) in module
+    assert (
+        "local.keycloak_edge_enabled && "
+        "local.supplied_portal_egress_allocation_id != null ? 1 : 0"
+    ) in module
+    assert "id = local.supplied_portal_egress_allocation_id" in module
+    assert "allocation_id       = local.portal_egress_allocation_id" in module
+    assert 'variable "portal_egress_instance_id"' in variables
+    assert "instance_id         = local.portal_egress_instance_id" in module
+    assert 'variable "manage_portal_target_ingress"' in variables
+    assert (
+        "local.edge_enabled && var.manage_portal_target_ingress ? 1 : 0"
+        in module
+    )
+    assert "allow_reassociation = true" in module
+    assert 'cidr_ipv4         = "${local.portal_egress_public_ip}/32"' in module
+    assert "value       = local.portal_egress_public_ip" in outputs
+    assert 'variable "security_portal_edge_egress_allocation_id"' in env
+    assert 'variable "security_portal_edge_egress_instance_id"' in env
+    assert 'variable "security_portal_edge_manage_target_ingress"' in env
+    assert (
+        "portal_egress_instance_id       = "
+        "var.security_portal_edge_egress_instance_id"
+    ) in env
+    assert (
+        "manage_portal_target_ingress    = "
+        "var.security_portal_edge_manage_target_ingress"
+    ) in env
+    assert "portal_egress_allocation_id     = var.security_portal_edge_egress_allocation_id" in env
+
+
 def test_ai_assistant_deployment_defaults_to_evidence_mode() -> None:
     deployer = DEPLOYER.read_text(encoding="utf-8")
     remote_script = REMOTE_SCRIPT.read_text(encoding="utf-8")
@@ -316,8 +374,11 @@ def test_ai_assistant_deployment_defaults_to_evidence_mode() -> None:
     assert "AI_ASSISTANT_MODEL_ID is required when AI_ASSISTANT_PROVIDER=bedrock" in deployer
     assert "AI_ASSISTANT_REGION must be a valid AWS region name" in deployer
     assert "AI_ASSISTANT_MAX_TOKENS must be an integer between 128 and 1200" in deployer
-    assert "printf 'AI_ASSISTANT_PROVIDER=%s\\n' '__AI_ASSISTANT_PROVIDER__'" in remote_script
-    assert "printf 'AI_ASSISTANT_MODEL_ID=%s\\n' '__AI_ASSISTANT_MODEL_ID__'" in remote_script
+    assert 'AI_ASSISTANT_PROVIDER="__AI_ASSISTANT_PROVIDER__"' in remote_script
+    assert "printf 'AI_ASSISTANT_PROVIDER=%s\\n' \"$AI_ASSISTANT_PROVIDER\"" in remote_script
+    assert "printf 'OLLAMA_COLD_START_ALLOWED=%s\\n'" in remote_script
+    assert 'AI_ASSISTANT_MODEL_ID="__AI_ASSISTANT_MODEL_ID__"' in remote_script
+    assert "printf 'AI_ASSISTANT_MODEL_ID=%s\\n' \"$AI_ASSISTANT_MODEL_ID\"" in remote_script
 
 
 def test_elasticsearch_peer_proxy_uses_only_the_host_private_ip() -> None:

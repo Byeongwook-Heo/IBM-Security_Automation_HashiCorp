@@ -4,6 +4,9 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 from multiprocessing import get_context
+import sqlite3
+from threading import Lock
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,6 +39,9 @@ def operational_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "evidence")
     for variable in (
         "AUTOMATION_EXECUTION_ENABLED",
+        "AUTOMATION_EXECUTION_ALLOWED_ACTIONS",
+        "AUTOMATION_DISPATCH_COOLDOWN_SECONDS",
+        "AUTOMATION_KILL_SWITCH",
         "KUBERNETES_API_URL",
         "KUBERNETES_SERVICE_HOST",
         "PROMETHEUS_URL",
@@ -63,6 +69,47 @@ def _initialize_store_in_process(store: str, database: str) -> int:
     if store == "cases":
         return len(CaseRepository(database).list())
     return len(AutomationService(database).list())
+
+
+class _CountingPlanOnlyDispatcher:
+    def __init__(self):
+        self.calls = 0
+        self._lock = Lock()
+
+    def dispatch(self, plan):
+        with self._lock:
+            self.calls += 1
+        time.sleep(0.05)
+        return automation.PlanOnlyDispatcher().dispatch(plan)
+
+
+def _create_approved_automation_request(
+    service: AutomationService,
+    *,
+    idempotency_key: str,
+    action_id: str = "cert_renew",
+    target_id: str = "certificate:portal-tls",
+) -> str:
+    created = service.create(
+        AutomationCreateRequest(
+            action_id=action_id,
+            target_id=target_id,
+            reason="Execute after scoped safety checks",
+        ),
+        "requester@example.com",
+        idempotency_key=idempotency_key,
+    )
+    service.approve(
+        created["id"],
+        AutomationApprovalRequest(decision="approve"),
+        "approver-one@example.com",
+    )
+    service.approve(
+        created["id"],
+        AutomationApprovalRequest(decision="approve"),
+        "approver-two@example.com",
+    )
+    return created["id"]
 
 
 def test_case_and_automation_stores_initialize_concurrently(tmp_path):
@@ -707,3 +754,217 @@ def test_automation_expiration_blocks_approval(monkeypatch, tmp_path):
             AutomationApprovalRequest(decision="approve"),
             "approver@example.com",
         )
+
+
+def test_automation_global_kill_switch_blocks_dispatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ALLOWED_ACTIONS", "cert_renew")
+    monkeypatch.setenv("AUTOMATION_KILL_SWITCH", "true")
+    service = AutomationService(str(tmp_path / "kill-switch.db"))
+    request_id = _create_approved_automation_request(
+        service,
+        idempotency_key="kill-switch-20260726",
+    )
+
+    with pytest.raises(
+        automation.AutomationExecutionDisabledError,
+        match="kill switch",
+    ):
+        service.dispatch(request_id, "dispatcher@example.com")
+
+    assert service.get(request_id)["status"] == "approved"
+
+
+def test_automation_execution_action_allowlist_blocks_unlisted_action(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ALLOWED_ACTIONS", "rescan")
+    service = AutomationService(str(tmp_path / "action-allowlist.db"))
+    request_id = _create_approved_automation_request(
+        service,
+        idempotency_key="action-allowlist-20260726",
+    )
+
+    with pytest.raises(
+        automation.AutomationExecutionDisabledError,
+        match="not enabled for action cert_renew",
+    ):
+        service.dispatch(request_id, "dispatcher@example.com")
+
+    assert service.get(request_id)["allowed_action"] is False
+
+
+def test_automation_target_action_cooldown_is_bounded_and_enforced(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ALLOWED_ACTIONS", "cert_renew")
+    monkeypatch.setenv("AUTOMATION_DISPATCH_COOLDOWN_SECONDS", "999999")
+    service = AutomationService(str(tmp_path / "cooldown.db"))
+    first_id = _create_approved_automation_request(
+        service,
+        idempotency_key="cooldown-first-20260726",
+    )
+    second_id = _create_approved_automation_request(
+        service,
+        idempotency_key="cooldown-second-20260726",
+    )
+
+    first = service.dispatch(first_id, "dispatcher@example.com")
+
+    assert (
+        first["dispatch_receipt"]["preflight"]["cooldown_seconds"]
+        == automation._MAX_COOLDOWN_SECONDS
+    )
+    with pytest.raises(automation.AutomationStateError, match="cooldown"):
+        service.dispatch(second_id, "dispatcher@example.com")
+    assert service.get(second_id)["status"] == "approved"
+
+
+def test_automation_dispatch_receipt_has_preflight_and_rollback_plan(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ALLOWED_ACTIONS", "lease_revoke")
+    service = AutomationService(str(tmp_path / "rollback-plan.db"))
+    request_id = _create_approved_automation_request(
+        service,
+        idempotency_key="rollback-plan-20260726",
+        action_id="lease_revoke",
+        target_id="lease:database/creds/read-only",
+    )
+
+    dispatched = service.dispatch(request_id, "dispatcher@example.com")
+    receipt = dispatched["dispatch_receipt"]
+
+    assert receipt["preflight"]["status"] == "passed"
+    assert {check["id"] for check in receipt["preflight"]["checks"]} == {
+        "global-kill-switch",
+        "execution-enabled",
+        "action-allowlist",
+        "target-action-cooldown",
+        "two-person-approval",
+    }
+    assert receipt["rollback_plan"]["reversibility"] == "non-reversible"
+    assert receipt["rollback_plan"]["strategy"] == "issue-replacement-credential"
+    assert receipt["external_side_effects"] is False
+    assert all(check["status"] == "passed" for check in receipt["preflight"]["checks"])
+    assert "[TRUNCATED]" not in json.dumps(receipt, sort_keys=True)
+
+
+def test_automation_audit_hash_chain_is_migration_safe_and_immutable(tmp_path):
+    database = tmp_path / "legacy-automation.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE automation_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO automation_audit(
+                request_id, actor, action, details_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-request",
+                "system",
+                "legacy_import",
+                '{"source":"legacy"}',
+                "2026-07-26T00:00:00Z",
+            ),
+        )
+
+    AutomationService(str(database))
+
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT request_id, actor, action, details_json, created_at,
+                   previous_hash, entry_hash, chain_version
+            FROM automation_audit
+            """
+        ).fetchone()
+        assert row["previous_hash"] == automation._AUDIT_GENESIS_HASH
+        assert row["entry_hash"] == automation._audit_entry_hash(
+            request_id=row["request_id"],
+            actor=row["actor"],
+            action=row["action"],
+            details_json=row["details_json"],
+            created_at=row["created_at"],
+            previous_hash=row["previous_hash"],
+            chain_version=row["chain_version"],
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE automation_audit SET actor = 'tampered' WHERE id = 1"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("DELETE FROM automation_audit WHERE id = 1")
+
+
+def test_automation_audit_hash_chain_reports_integrity(tmp_path):
+    service = AutomationService(str(tmp_path / "audit-chain.db"))
+    request_id = _create_approved_automation_request(
+        service,
+        idempotency_key="audit-chain-20260726",
+    )
+
+    events = service.audit(request_id)
+
+    assert len(events) == 3
+    assert all(event["chain_valid"] is True for event in events)
+    assert events[0]["previous_hash"] == automation._AUDIT_GENESIS_HASH
+    assert all(
+        current["previous_hash"] == previous["entry_hash"]
+        for previous, current in zip(events, events[1:])
+    )
+
+
+def test_automation_concurrent_duplicate_dispatch_is_idempotent(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("AUTOMATION_EXECUTION_ALLOWED_ACTIONS", "cert_renew")
+    dispatcher = _CountingPlanOnlyDispatcher()
+    service = AutomationService(
+        str(tmp_path / "concurrent-dispatch.db"),
+        dispatcher=dispatcher,
+    )
+    request_id = _create_approved_automation_request(
+        service,
+        idempotency_key="concurrent-dispatch-20260726",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(service.dispatch, request_id, f"dispatcher-{index}")
+            for index in range(2)
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert dispatcher.calls == 1
+    assert {result["status"] for result in results} == {"dispatched"}
+    assert {
+        result["dispatch_receipt"]["dispatch_id"] for result in results
+    } == {results[0]["dispatch_receipt"]["dispatch_id"]}
+    assert sorted(result["idempotent_dispatch"] for result in results) == [
+        False,
+        True,
+    ]
+    assert [
+        event["action"] for event in service.audit(request_id)
+    ].count("request_dispatched") == 1

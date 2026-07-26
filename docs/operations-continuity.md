@@ -261,6 +261,34 @@ For S3 retention, set both `BACKUP_S3_URI` and
 `BACKUP_S3_KMS_KEY_ID`. The script uploads only the age-encrypted archive and
 its checksum with SSE-KMS.
 
+## AWS-Native Runtime Backup
+
+The dedicated portal runtime also uses AWS Backup for infrastructure recovery.
+Terraform creates a KMS-encrypted Backup vault with governance lock, a daily
+35-day plan, and a selection limited to
+`backup_scope=security-portal-core`. Only the dedicated portal EC2 instance and
+portal PostgreSQL database carry that tag.
+
+Enablement is cost-gated:
+
+```bash
+terraform -chdir=terraform/envs/lab plan \
+  -var='enable_security_platform_backup=true' \
+  -var='security_platform_backup_cost_acknowledgement=I_ACKNOWLEDGE_AWS_BACKUP_COSTS'
+```
+
+Verify completed recovery points and restore metadata without initiating a
+restore:
+
+```bash
+EXPECTED_RESOURCE_ARNS="<portal-ec2-arn>,<portal-rds-arn>" \
+  scripts/verify-security-platform-backups.sh
+```
+
+The verifier requires every expected resource ARN, uses a private temporary
+directory, and does not print secret material. A real restore must target an
+isolated recovery environment and remains a separately approved exercise.
+
 ## Verified Restore
 
 Dry-run decrypts the archive, rejects unsafe paths and symbolic links, verifies

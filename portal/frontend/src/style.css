@@ -101,14 +101,12 @@
 }
 
 html {
-  min-width: 320px;
   background: var(--bg);
   scroll-behavior: auto;
 }
 
 body {
   margin: 0;
-  min-width: 320px;
   min-height: 100vh;
   background: var(--bg);
   color: var(--text);
@@ -608,6 +606,11 @@ caption {
   background: var(--surface);
   box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
   color: var(--blue-ink);
+}
+
+.assistant-segments button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .assistant-context__selection {

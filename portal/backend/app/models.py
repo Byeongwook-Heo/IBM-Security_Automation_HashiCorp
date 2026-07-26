@@ -98,7 +98,7 @@ class AssistantToolResult(BaseModel):
 class AssistantChatResponse(BaseModel):
     message_id: str
     answer: str
-    provider: Literal["evidence-engine", "amazon-bedrock"]
+    provider: Literal["evidence-engine", "amazon-bedrock", "shared-ollama"]
     model: str | None = None
     confidence: Literal["low", "medium", "high"]
     evidence: list[AssistantEvidence] = Field(default_factory=list)

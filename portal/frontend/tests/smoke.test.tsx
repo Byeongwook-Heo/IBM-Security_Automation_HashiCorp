@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "../src/main";
+import portalStyles from "../src/style.css?raw";
 
 beforeEach(() => {
   window.history.replaceState(null, "", "#/overview");
@@ -36,6 +37,26 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function defaultPortalResponse(input: RequestInfo | URL) {
+  const url = new URL(String(input), "http://portal.test");
+  if (url.pathname === "/api/dashboard/summary") {
+    return jsonResponse({ security_score: 80, elastic_enabled: false });
+  }
+  if (url.pathname === "/api/application-risk/summary") {
+    return jsonResponse({ score: 0, sources: [], top_applications: [] });
+  }
+  if (url.pathname === "/api/kubernetes/platform") {
+    return jsonResponse({ mode: "existing_or_test_eks", status: "active", components: [] });
+  }
+  if (url.pathname === "/api/kubernetes/cost-summary") {
+    return jsonResponse({ provider: "OpenCost" });
+  }
+  if (url.pathname === "/api/enterprise/status") {
+    return jsonResponse({});
+  }
+  return jsonResponse([]);
 }
 
 describe("security portal", () => {
@@ -277,6 +298,11 @@ describe("security portal", () => {
     expect(await screen.findByText("보안 점수")).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute("lang", "ko");
     expect(window.localStorage.getItem("security-portal.locale")).toBe("ko");
+    const firstSeenAt = document.querySelector(".priority-table tbody tr td:nth-child(6)");
+    expect(firstSeenAt).not.toBeNull();
+    expect(firstSeenAt).toHaveTextContent("7월");
+    expect(firstSeenAt).not.toHaveTextContent("Jul");
+    expect(screen.getByText("시크릿 노출 감지")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "다크 모드로 전환" }));
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
@@ -343,9 +369,23 @@ describe("security portal", () => {
     expect(await screen.findByText("Security score")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: /^Investigations/ }));
     expect(window.location.hash).toBe("#/investigations");
-    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    const assistantTrigger = screen.getByRole("button", { name: "Open AI analyst" });
+    fireEvent.click(assistantTrigger);
 
     const dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    const assistantInput = within(dialog).getByRole("textbox", { name: "Ask AI analyst" });
+    const closeButton = within(dialog).getByRole("button", { name: "Close AI analyst" });
+    expect(document.querySelector(".app-shell")).toHaveAttribute("inert");
+    await waitFor(() => expect(assistantInput).toHaveFocus());
+
+    fireEvent.change(assistantInput, { target: { value: "focus trap check" } });
+    const sendButton = within(dialog).getByRole("button", { name: "Send question" });
+    sendButton.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(sendButton).toHaveFocus();
+
     expect(within(dialog).getByText("Secret Exposure")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Explain the current risk" }));
 
@@ -360,8 +400,143 @@ describe("security portal", () => {
     expect(JSON.stringify(assistantRequest)).not.toContain("sourceIp");
     expect(JSON.stringify(assistantRequest)).not.toContain("raw_event");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close AI analyst" }));
+    fireEvent.click(closeButton);
     expect(screen.queryByRole("dialog", { name: "AI Security Analyst" })).not.toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).not.toHaveAttribute("inert");
+    await waitFor(() => expect(assistantTrigger).toHaveFocus());
+  });
+
+  it("keeps the AI context synchronized with navigation and hash history", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => defaultPortalResponse(input)),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    let dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    expect(within(dialog).getByRole("button", { name: "Dashboard" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close AI analyst" }));
+
+    fireEvent.click(screen.getByRole("link", { name: "Data Security" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    expect(within(dialog).getByRole("button", { name: "DB audit" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close AI analyst" }));
+
+    act(() => {
+      window.history.replaceState(null, "", "#/overview");
+      window.dispatchEvent(new Event("hashchange"));
+    });
+    await waitFor(() =>
+      expect(document.querySelector(".view-stack")).toHaveAttribute("data-view", "overview"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    expect(within(dialog).getByRole("button", { name: "Dashboard" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("locks context controls while loading and ignores a stale assistant response", async () => {
+    let resolveAssistant: (response: Response) => void = () => undefined;
+    const pendingAssistant = new Promise<Response>((resolve) => {
+      resolveAssistant = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (init?.method === "POST" && url.pathname === "/api/assistant/chat") {
+          return pendingAssistant;
+        }
+        return Promise.resolve(defaultPortalResponse(input));
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    const dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Explain the current risk" }));
+
+    expect(within(dialog).getByRole("button", { name: "Dashboard" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Finding" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "DB audit" })).toBeDisabled();
+
+    act(() => {
+      window.history.replaceState(null, "", "#/data-security");
+      window.dispatchEvent(new Event("hashchange"));
+    });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "DB audit" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+    expect(within(dialog).getByRole("button", { name: "Dashboard" })).toBeEnabled();
+
+    await act(async () => {
+      resolveAssistant(
+        jsonResponse({
+          message_id: "stale-assistant-response",
+          answer: "This stale answer must not be rendered.",
+          provider: "evidence-engine",
+          confidence: "high",
+        }),
+      );
+      await pendingAssistant;
+    });
+    expect(
+      within(dialog).queryByText("This stale answer must not be rendered."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the shared Ollama provider and model without relabeling it as evidence mode", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://portal.test");
+        if (init?.method === "POST" && url.pathname === "/api/assistant/chat") {
+          return jsonResponse({
+            message_id: "assistant-ollama",
+            answer: "The shared model returned a reviewed analysis.",
+            provider: "shared-ollama",
+            model: "qwen3:8b",
+            confidence: "medium",
+            evidence: [],
+            recommendations: [],
+            follow_up_prompts: [],
+            human_review_required: true,
+          });
+        }
+        return defaultPortalResponse(input);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Security score")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open AI analyst" }));
+    const dialog = screen.getByRole("dialog", { name: "AI Security Analyst" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Explain the current risk" }));
+
+    expect(
+      await within(dialog).findByText("The shared model returned a reviewed analysis."),
+    ).toBeInTheDocument();
+    expect(within(dialog).getAllByText("Shared Ollama · qwen3:8b")).toHaveLength(2);
+    expect(within(dialog).queryByText("Evidence mode")).not.toBeInTheDocument();
   });
 
   it("switches between independent portal views without rendering a long anchor page", async () => {
@@ -644,5 +819,9 @@ describe("security portal", () => {
       "title",
       "A different reviewer must provide the second approval.",
     );
+  });
+
+  it("does not impose a fixed 320px minimum width on the document root", () => {
+    expect(portalStyles).not.toContain("min-width: 320px");
   });
 });

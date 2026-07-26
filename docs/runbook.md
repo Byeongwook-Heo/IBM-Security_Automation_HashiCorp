@@ -124,6 +124,10 @@ The deployment succeeds only after both the portal and Filebeat containers are
 running. Filebeat uses `filestream` against Docker container logs and writes to
 `filebeat-security-lab-*`. The default portal authentication mode fails closed;
 provide approved Keycloak OIDC/proxy settings before enabling user access.
+The lab default target is the dedicated portal EC2 instance. Cases use the
+portal PostgreSQL database, OIDC sessions use TLS Valkey, and the shared Ollama
+provider is allowed only with cold starts disabled; otherwise the assistant
+falls back to allowlisted evidence.
 
 ## HTTPS, Keycloak OIDC, and Direct Vault Release
 

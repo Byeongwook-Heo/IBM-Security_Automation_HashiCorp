@@ -2,8 +2,10 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
-INSTANCE_ID="${INSTANCE_ID:-i-09c656a6f462df4f2}"
+INSTANCE_ID="${INSTANCE_ID:-i-0f55ad496197cb2b5}"
 ELASTIC_SECRET_ID="${ELASTIC_SECRET_ID:-ibm-hc-lab-elastic-siem/bootstrap-credentials}"
+ELASTIC_URL="${ELASTIC_URL:-http://127.0.0.1:9200}"
+ELASTIC_VERIFY_TLS="${ELASTIC_VERIFY_TLS:-false}"
 PORTAL_PORT="${PORTAL_PORT:-8080}"
 ADMIN_CIDR="${ADMIN_CIDR:-}"
 SSM_CHUNK_SIZE="${SSM_CHUNK_SIZE:-10000}"
@@ -33,6 +35,20 @@ AI_ASSISTANT_PROVIDER="${AI_ASSISTANT_PROVIDER:-evidence}"
 AI_ASSISTANT_MODEL_ID="${AI_ASSISTANT_MODEL_ID:-}"
 AI_ASSISTANT_REGION="${AI_ASSISTANT_REGION:-$REGION}"
 AI_ASSISTANT_MAX_TOKENS="${AI_ASSISTANT_MAX_TOKENS:-700}"
+PORTAL_REDIS_SECRET_ID="${PORTAL_REDIS_SECRET_ID:-}"
+PORTAL_REDIS_URL="${PORTAL_REDIS_URL:-}"
+CASE_DATABASE_SECRET_ID="${CASE_DATABASE_SECRET_ID:-}"
+CASE_DATABASE_HOST="${CASE_DATABASE_HOST:-}"
+CASE_DATABASE_PORT="${CASE_DATABASE_PORT:-5432}"
+CASE_DATABASE_NAME="${CASE_DATABASE_NAME:-security_portal}"
+OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:8b}"
+OLLAMA_API_TOKEN_SECRET_ID="${OLLAMA_API_TOKEN_SECRET_ID:-}"
+OLLAMA_TIMEOUT_SECONDS="${OLLAMA_TIMEOUT_SECONDS:-5}"
+OLLAMA_MAX_TOKENS="${OLLAMA_MAX_TOKENS:-350}"
+OLLAMA_MAX_CONTEXT_CHARS="${OLLAMA_MAX_CONTEXT_CHARS:-10000}"
+OLLAMA_GLOBAL_CONCURRENCY="${OLLAMA_GLOBAL_CONCURRENCY:-1}"
+OLLAMA_MIN_REQUEST_INTERVAL_SECONDS="${OLLAMA_MIN_REQUEST_INTERVAL_SECONDS:-10}"
 
 validate_cidr() {
   python3 - "$1" <<'PY'
@@ -135,6 +151,53 @@ if (
 PY
 }
 
+validate_service_url() {
+  local value="$1"
+  local allow_http="${2:-true}"
+  python3 - "$value" "$allow_http" <<'PY'
+import ipaddress
+import re
+import sys
+from urllib.parse import urlsplit
+
+value, allow_http = sys.argv[1:]
+try:
+    parsed = urlsplit(value)
+    port = parsed.port
+except ValueError:
+    raise SystemExit(1)
+
+hostname = parsed.hostname or ""
+try:
+    ipaddress.ip_address(hostname)
+    host_is_valid = True
+except ValueError:
+    host_is_valid = (
+        len(hostname) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in hostname.rstrip(".").split(".")
+        )
+    )
+
+allowed_schemes = {"https"}
+if allow_http == "true":
+    allowed_schemes.add("http")
+if (
+    parsed.scheme not in allowed_schemes
+    or not hostname
+    or not host_is_valid
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.path not in ("", "/")
+    or parsed.query
+    or parsed.fragment
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit(1)
+PY
+}
+
 for required_command in aws jq python3 base64; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "$required_command is required for portal deployment" >&2
@@ -154,6 +217,22 @@ fi
 
 if [[ -z "$ELASTIC_SECRET_ID" || ! "$ELASTIC_SECRET_ID" =~ ^[A-Za-z0-9/_+=.@:-]+$ ]]; then
   echo "ELASTIC_SECRET_ID must be a valid Secrets Manager secret ID or ARN" >&2
+  exit 1
+fi
+if ! validate_service_url "$ELASTIC_URL" true; then
+  echo "ELASTIC_URL must be a credential-free HTTP(S) origin" >&2
+  exit 1
+fi
+if [[ "$ELASTIC_VERIFY_TLS" != "true" && "$ELASTIC_VERIFY_TLS" != "false" ]]; then
+  echo "ELASTIC_VERIFY_TLS must be true or false" >&2
+  exit 1
+fi
+if [[ "$ELASTIC_URL" == https://* && "$ELASTIC_VERIFY_TLS" != "true" ]]; then
+  echo "HTTPS Elasticsearch endpoints require ELASTIC_VERIFY_TLS=true" >&2
+  exit 1
+fi
+if [[ "$ELASTIC_URL" == http://* && "$ELASTIC_VERIFY_TLS" == "true" ]]; then
+  echo "ELASTIC_VERIFY_TLS=true requires an HTTPS Elasticsearch endpoint" >&2
   exit 1
 fi
 
@@ -267,8 +346,11 @@ elif [[ -n "$PORTAL_OIDC_ISSUER_URL" || -n "$PORTAL_OIDC_SECRET_ID" ]]; then
   exit 1
 fi
 
-if [[ "$AI_ASSISTANT_PROVIDER" != "evidence" && "$AI_ASSISTANT_PROVIDER" != "bedrock" ]]; then
-  echo "AI_ASSISTANT_PROVIDER must be evidence or bedrock" >&2
+if [[ "$AI_ASSISTANT_PROVIDER" != "evidence" \
+  && "$AI_ASSISTANT_PROVIDER" != "bedrock" \
+  && "$AI_ASSISTANT_PROVIDER" != "ollama" \
+  && "$AI_ASSISTANT_PROVIDER" != "local-ollama" ]]; then
+  echo "AI_ASSISTANT_PROVIDER must be evidence, bedrock, ollama, or local-ollama" >&2
   exit 1
 fi
 
@@ -280,6 +362,145 @@ fi
 if [[ ! "$AI_ASSISTANT_MODEL_ID" =~ ^[A-Za-z0-9._:/-]*$ ]]; then
   echo "AI_ASSISTANT_MODEL_ID contains unsupported characters" >&2
   exit 1
+fi
+
+for optional_secret_id in \
+  "$PORTAL_REDIS_SECRET_ID" \
+  "$CASE_DATABASE_SECRET_ID" \
+  "$OLLAMA_API_TOKEN_SECRET_ID"; do
+  if [[ -n "$optional_secret_id" && ! "$optional_secret_id" =~ ^[A-Za-z0-9/_+=.@:!-]+$ ]]; then
+    echo "Runtime Secrets Manager IDs contain unsupported characters" >&2
+    exit 1
+  fi
+done
+
+if [[ "$CASE_DATABASE_SECRET_ID" == *":secret:rds!db-"* && -z "$CASE_DATABASE_HOST" ]]; then
+  echo "CASE_DATABASE_HOST is required for an RDS-managed secret" >&2
+  exit 1
+fi
+if [[ -n "$CASE_DATABASE_HOST" ]] && ! python3 - "$CASE_DATABASE_HOST" <<'PY'
+import ipaddress
+import re
+import sys
+
+host = sys.argv[1]
+try:
+    ipaddress.ip_address(host)
+except ValueError:
+    if not (
+        len(host) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in host.rstrip(".").split(".")
+        )
+    ):
+        raise SystemExit(1)
+PY
+then
+  echo "CASE_DATABASE_HOST must be a valid hostname or IP address" >&2
+  exit 1
+fi
+if [[ ! "$CASE_DATABASE_PORT" =~ ^[0-9]+$ ]] \
+  || (( CASE_DATABASE_PORT < 1 || CASE_DATABASE_PORT > 65535 )); then
+  echo "CASE_DATABASE_PORT must be an integer from 1 through 65535" >&2
+  exit 1
+fi
+if [[ ! "$CASE_DATABASE_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]; then
+  echo "CASE_DATABASE_NAME must be a valid PostgreSQL database name" >&2
+  exit 1
+fi
+
+if [[ -n "$PORTAL_REDIS_URL" ]]; then
+  if [[ -n "$PORTAL_REDIS_SECRET_ID" ]]; then
+    echo "Set only one of PORTAL_REDIS_URL or PORTAL_REDIS_SECRET_ID" >&2
+    exit 1
+  fi
+  if ! python3 - "$PORTAL_REDIS_URL" <<'PY'
+import ipaddress
+import re
+import sys
+from urllib.parse import urlsplit
+
+try:
+    parsed = urlsplit(sys.argv[1])
+    port = parsed.port
+except ValueError:
+    raise SystemExit(1)
+hostname = parsed.hostname or ""
+try:
+    ipaddress.ip_address(hostname)
+except ValueError:
+    if not (
+        len(hostname) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in hostname.rstrip(".").split(".")
+        )
+    ):
+        raise SystemExit(1)
+if (
+    parsed.scheme != "rediss"
+    or not hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.path not in ("", "/", "/0")
+    or parsed.query
+    or parsed.fragment
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit(1)
+PY
+  then
+    echo "PORTAL_REDIS_URL must be a credential-free rediss:// origin" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$AI_ASSISTANT_PROVIDER" == "ollama" || "$AI_ASSISTANT_PROVIDER" == "local-ollama" ]]; then
+  if ! validate_service_url "$OLLAMA_BASE_URL" true; then
+    echo "OLLAMA_BASE_URL must be a credential-free HTTP(S) origin" >&2
+    exit 1
+  fi
+  if [[ -z "$OLLAMA_API_TOKEN_SECRET_ID" ]]; then
+    echo "OLLAMA_API_TOKEN_SECRET_ID is required for the Ollama provider" >&2
+    exit 1
+  fi
+  if [[ ! "$OLLAMA_MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+    echo "OLLAMA_MODEL contains unsupported characters" >&2
+    exit 1
+  fi
+  if [[ "$OLLAMA_GLOBAL_CONCURRENCY" != "1" ]]; then
+    echo "OLLAMA_GLOBAL_CONCURRENCY must remain 1 for the shared Ollama service" >&2
+    exit 1
+  fi
+  if ! python3 - \
+    "$OLLAMA_TIMEOUT_SECONDS" \
+    "$OLLAMA_MAX_TOKENS" \
+    "$OLLAMA_MAX_CONTEXT_CHARS" \
+    "$OLLAMA_MIN_REQUEST_INTERVAL_SECONDS" <<'PY'
+import sys
+
+timeout, max_tokens, max_context, minimum_interval = sys.argv[1:]
+try:
+    timeout = float(timeout)
+    max_tokens = int(max_tokens)
+    max_context = int(max_context)
+    minimum_interval = float(minimum_interval)
+except ValueError:
+    raise SystemExit(1)
+if not 0.5 <= timeout <= 10:
+    raise SystemExit(1)
+if not 64 <= max_tokens <= 800:
+    raise SystemExit(1)
+if not 2000 <= max_context <= 24000:
+    raise SystemExit(1)
+if not 0 <= minimum_interval <= 300:
+    raise SystemExit(1)
+PY
+  then
+    echo "Ollama resource guardrail values are outside the approved bounds" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! "$AI_ASSISTANT_REGION" =~ ^[a-z0-9-]+$ ]]; then
@@ -430,6 +651,8 @@ rm -f /tmp/security-portal-runtime.tar.gz.b64" 120 >/dev/null
 REMOTE_SCRIPT="$(
   REGION="$REGION" \
   ELASTIC_SECRET_ID="$ELASTIC_SECRET_ID" \
+  ELASTIC_URL="$ELASTIC_URL" \
+  ELASTIC_VERIFY_TLS="$ELASTIC_VERIFY_TLS" \
   PORTAL_PORT="$PORTAL_PORT" \
   GRAFANA_URL="$GRAFANA_URL" \
   PROMETHEUS_URL="$PROMETHEUS_URL" \
@@ -457,6 +680,20 @@ REMOTE_SCRIPT="$(
   AI_ASSISTANT_MODEL_ID="$AI_ASSISTANT_MODEL_ID" \
   AI_ASSISTANT_REGION="$AI_ASSISTANT_REGION" \
   AI_ASSISTANT_MAX_TOKENS="$AI_ASSISTANT_MAX_TOKENS" \
+  PORTAL_REDIS_SECRET_ID="$PORTAL_REDIS_SECRET_ID" \
+  PORTAL_REDIS_URL="$PORTAL_REDIS_URL" \
+  CASE_DATABASE_SECRET_ID="$CASE_DATABASE_SECRET_ID" \
+  CASE_DATABASE_HOST="$CASE_DATABASE_HOST" \
+  CASE_DATABASE_PORT="$CASE_DATABASE_PORT" \
+  CASE_DATABASE_NAME="$CASE_DATABASE_NAME" \
+  OLLAMA_BASE_URL="$OLLAMA_BASE_URL" \
+  OLLAMA_MODEL="$OLLAMA_MODEL" \
+  OLLAMA_API_TOKEN_SECRET_ID="$OLLAMA_API_TOKEN_SECRET_ID" \
+  OLLAMA_TIMEOUT_SECONDS="$OLLAMA_TIMEOUT_SECONDS" \
+  OLLAMA_MAX_TOKENS="$OLLAMA_MAX_TOKENS" \
+  OLLAMA_MAX_CONTEXT_CHARS="$OLLAMA_MAX_CONTEXT_CHARS" \
+  OLLAMA_GLOBAL_CONCURRENCY="$OLLAMA_GLOBAL_CONCURRENCY" \
+  OLLAMA_MIN_REQUEST_INTERVAL_SECONDS="$OLLAMA_MIN_REQUEST_INTERVAL_SECONDS" \
   python3 - "$ROOT_DIR/scripts/remote-deploy-portal.sh.tmpl" <<'PY'
 import os
 import sys
@@ -468,6 +705,8 @@ with open(template_path, "r", encoding="utf-8") as handle:
 for key in (
     "REGION",
     "ELASTIC_SECRET_ID",
+    "ELASTIC_URL",
+    "ELASTIC_VERIFY_TLS",
     "PORTAL_PORT",
     "GRAFANA_URL",
     "PROMETHEUS_URL",
@@ -495,6 +734,20 @@ for key in (
     "AI_ASSISTANT_MODEL_ID",
     "AI_ASSISTANT_REGION",
     "AI_ASSISTANT_MAX_TOKENS",
+    "PORTAL_REDIS_SECRET_ID",
+    "PORTAL_REDIS_URL",
+    "CASE_DATABASE_SECRET_ID",
+    "CASE_DATABASE_HOST",
+    "CASE_DATABASE_PORT",
+    "CASE_DATABASE_NAME",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_MODEL",
+    "OLLAMA_API_TOKEN_SECRET_ID",
+    "OLLAMA_TIMEOUT_SECONDS",
+    "OLLAMA_MAX_TOKENS",
+    "OLLAMA_MAX_CONTEXT_CHARS",
+    "OLLAMA_GLOBAL_CONCURRENCY",
+    "OLLAMA_MIN_REQUEST_INTERVAL_SECONDS",
 ):
     text = text.replace(f"__{key}__", os.environ[key])
 

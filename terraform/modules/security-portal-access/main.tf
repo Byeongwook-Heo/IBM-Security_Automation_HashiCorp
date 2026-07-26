@@ -2,6 +2,16 @@ locals {
   portal_domain   = var.portal_domain_name == null ? null : lower(trimspace(var.portal_domain_name))
   keycloak_domain = var.keycloak_domain_name == null ? null : lower(trimspace(var.keycloak_domain_name))
   zone_name       = var.route53_zone_name == null ? null : "${trimsuffix(lower(trimspace(var.route53_zone_name)), ".")}."
+  supplied_portal_egress_allocation_id = (
+    var.portal_egress_allocation_id == null
+    ? null
+    : trimspace(var.portal_egress_allocation_id)
+  )
+  portal_egress_instance_id = (
+    var.portal_egress_instance_id == null
+    ? var.portal_target_instance_id
+    : trimspace(var.portal_egress_instance_id)
+  )
 
   certificate_configured = var.create_certificate || var.certificate_arn != null
   edge_enabled = (
@@ -225,7 +235,7 @@ resource "aws_vpc_security_group_egress_rule" "portal_target" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "portal_from_alb" {
-  count = local.edge_enabled ? 1 : 0
+  count = local.edge_enabled && var.manage_portal_target_ingress ? 1 : 0
 
   security_group_id            = local.portal_target_security_group_id
   description                  = "Dedicated portal ALB to the portal service"
@@ -233,6 +243,10 @@ resource "aws_vpc_security_group_ingress_rule" "portal_from_alb" {
   to_port                      = var.portal_target_port
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.portal_alb[0].id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_s3_bucket" "portal_access_logs" {
@@ -387,6 +401,10 @@ resource "aws_lb_target_group_attachment" "portal" {
   target_group_arn = aws_lb_target_group.portal[0].arn
   target_id        = data.aws_instance.portal[0].id
   port             = var.portal_target_port
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lb_listener" "portal_http" {
@@ -458,12 +476,23 @@ resource "aws_vpc_security_group_ingress_rule" "keycloak_https" {
   cidr_ipv6         = strcontains(each.value.cidr, ":") ? each.value.cidr : null
 }
 
+data "aws_eip" "portal_egress" {
+  count = local.keycloak_edge_enabled && local.supplied_portal_egress_allocation_id != null ? 1 : 0
+
+  id = local.supplied_portal_egress_allocation_id
+}
+
 resource "aws_eip" "portal_egress" {
-  count = local.keycloak_edge_enabled ? 1 : 0
+  count = local.keycloak_edge_enabled && local.supplied_portal_egress_allocation_id == null ? 1 : 0
 
   domain = "vpc"
 
   tags = merge(local.common_tags, { Name = "${var.name_prefix}-portal-egress" })
+}
+
+locals {
+  portal_egress_allocation_id = local.supplied_portal_egress_allocation_id != null ? try(data.aws_eip.portal_egress[0].id, null) : try(aws_eip.portal_egress[0].id, null)
+  portal_egress_public_ip     = local.supplied_portal_egress_allocation_id != null ? try(data.aws_eip.portal_egress[0].public_ip, null) : try(aws_eip.portal_egress[0].public_ip, null)
 }
 
 resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal" {
@@ -474,7 +503,7 @@ resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal" {
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
-  cidr_ipv4         = "${aws_eip.portal_egress[0].public_ip}/32"
+  cidr_ipv4         = "${local.portal_egress_public_ip}/32"
 
   depends_on = [terraform_data.guardrails]
 }
@@ -482,8 +511,8 @@ resource "aws_vpc_security_group_ingress_rule" "keycloak_https_from_portal" {
 resource "aws_eip_association" "portal_egress" {
   count = local.keycloak_edge_enabled ? 1 : 0
 
-  allocation_id       = aws_eip.portal_egress[0].id
-  instance_id         = data.aws_instance.portal[0].id
+  allocation_id       = local.portal_egress_allocation_id
+  instance_id         = local.portal_egress_instance_id
   allow_reassociation = true
 
   depends_on = [aws_vpc_security_group_ingress_rule.keycloak_https_from_portal]

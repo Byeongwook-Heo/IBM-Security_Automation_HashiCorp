@@ -83,6 +83,8 @@ def test_vault_radar_runner_retains_only_aggregate_metrics() -> None:
     assert "describe-instance-attribute" not in script
     assert 'cat "$report_file"' not in script
     assert "set -x" not in script
+    assert "jq -s -r" in script
+    assert 'if [[ ! -e "$report_file" ]]' in script
 
     result = subprocess.run(
         ["bash", "-n"],
@@ -145,6 +147,19 @@ def test_alertmanager_defaults_to_internal_fail_closed_relay() -> None:
         "http://alertmanager-notification-relay.security-lab.svc.cluster.local:"
     )
     assert values["prometheus-pushgateway"]["enabled"] is True
+    assert values["prometheus-pushgateway"]["securityContext"]["runAsNonRoot"] is True
+    assert (
+        values["prometheus-pushgateway"]["containerSecurityContext"][
+            "allowPrivilegeEscalation"
+        ]
+        is False
+    )
+    assert (
+        values["prometheus-pushgateway"]["containerSecurityContext"][
+            "readOnlyRootFilesystem"
+        ]
+        is True
+    )
     assert "hooks.slack.com" not in str(values)
     assert "office.com/webhook" not in str(values)
     assert "smtp_password" not in str(values).lower()
@@ -217,6 +232,8 @@ def test_deployers_materialize_secrets_only_from_approved_sources() -> None:
     assert "repository@sha256" in radar
     assert "VAULT_RADAR_IRSA_ROLE_ARN" in radar
     assert "raw_results_retained:false" in radar
+    assert '.type == "Failed" and .status == "True"' in radar
+    assert "qa_timeout_seconds" in radar
 
     assert "ALERTMANAGER_CHANNELS:-none" in alertmanager
     assert "ALERTMANAGER_SECRET_SOURCE:-none" in alertmanager

@@ -7,7 +7,8 @@ This runbook prepares production-style authentication for the existing lab porta
 - Portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
 - Keycloak: `https://keycloak.byeongwook-heo.sbx.hashidemos.io`
 - Route53 public zone: `byeongwook-heo.sbx.hashidemos.io`
-- Portal target: EC2 `i-09c656a6f462df4f2`, HTTP port `8080`
+- Portal target: dedicated EC2 `i-0f55ad496197cb2b5`, HTTP port `8080`
+- Portal egress EIP owner: Elastic EC2 `i-09c656a6f462df4f2`
 - Portal edge: a new dedicated ALB named `ibm-hc-lab-portal-edge`
 - Keycloak edge: a new HTTPS listener on the existing `hashicorp-lab-dev-keycloak-alb`
 - TLS: one regional ACM certificate covering both names, validated through Route53
@@ -91,6 +92,9 @@ security_portal_edge_create_certificate        = true
 security_portal_edge_subnet_ids                = ["subnet-public-az-a", "subnet-public-az-b"]
 security_portal_edge_allowed_cidr_blocks       = ["203.0.113.10/32"]
 security_portal_edge_target_security_group_id  = "sg-portal-instance"
+security_portal_edge_target_instance_id        = "i-0f55ad496197cb2b5"
+security_portal_edge_egress_instance_id        = "i-09c656a6f462df4f2"
+security_portal_edge_manage_target_ingress     = false
 ```
 
 The defaults already select:
@@ -98,7 +102,8 @@ The defaults already select:
 - `portal.byeongwook-heo.sbx.hashidemos.io`
 - `keycloak.byeongwook-heo.sbx.hashidemos.io`
 - `hashicorp-lab-dev-keycloak-alb`
-- `i-09c656a6f462df4f2`
+- portal target `i-0f55ad496197cb2b5`
+- egress EIP owner `i-09c656a6f462df4f2`
 - Route53 zone `byeongwook-heo.sbx.hashidemos.io`
 
 Review and apply:

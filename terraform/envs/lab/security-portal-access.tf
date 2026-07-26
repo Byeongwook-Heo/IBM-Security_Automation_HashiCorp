@@ -34,13 +34,43 @@ variable "security_portal_edge_keycloak_domain_name" {
 
 variable "security_portal_edge_target_instance_id" {
   type    = string
-  default = "i-09c656a6f462df4f2"
+  default = "i-0f55ad496197cb2b5"
+}
+
+variable "security_portal_edge_egress_instance_id" {
+  description = "Optional EC2 instance that retains the edge-managed EIP when the ALB target moves."
+  type        = string
+  default     = "i-09c656a6f462df4f2"
+  nullable    = true
+
+  validation {
+    condition     = var.security_portal_edge_egress_instance_id == null ? true : can(regex("^i-[0-9a-f]{8}([0-9a-f]{9})?$", trimspace(var.security_portal_edge_egress_instance_id)))
+    error_message = "security_portal_edge_egress_instance_id must be null or a valid EC2 instance ID."
+  }
 }
 
 variable "security_portal_edge_target_security_group_id" {
   type     = string
   default  = null
   nullable = true
+}
+
+variable "security_portal_edge_manage_target_ingress" {
+  description = "Manage ALB ingress on the target SG. Disable when security_portal_runtime owns it."
+  type        = bool
+  default     = false
+}
+
+variable "security_portal_edge_egress_allocation_id" {
+  description = "Optional externally managed VPC Elastic IP allocation ID for portal egress."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.security_portal_edge_egress_allocation_id == null ? true : can(regex("^eipalloc-[0-9a-f]{8}([0-9a-f]{9})?$", trimspace(var.security_portal_edge_egress_allocation_id)))
+    error_message = "security_portal_edge_egress_allocation_id must be null or a valid Elastic IP allocation ID."
+  }
 }
 
 variable "security_portal_edge_subnet_ids" {
@@ -85,7 +115,10 @@ module "security_portal_access" {
   create_certificate              = var.security_portal_edge_create_certificate
   certificate_arn                 = var.security_portal_edge_certificate_arn
   portal_target_instance_id       = var.security_portal_edge_target_instance_id
+  portal_egress_instance_id       = var.security_portal_edge_egress_instance_id
   portal_target_security_group_id = var.security_portal_edge_target_security_group_id
+  manage_portal_target_ingress    = var.security_portal_edge_manage_target_ingress
+  portal_egress_allocation_id     = var.security_portal_edge_egress_allocation_id
   portal_alb_subnet_ids           = var.security_portal_edge_subnet_ids
   portal_target_port              = var.elastic_siem_security_portal_port
   allowed_cidr_blocks             = var.security_portal_edge_allowed_cidr_blocks

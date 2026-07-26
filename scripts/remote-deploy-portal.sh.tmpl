@@ -3,6 +3,8 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive
 REGION="__REGION__"
 ELASTIC_SECRET_ID="__ELASTIC_SECRET_ID__"
+ELASTIC_URL="__ELASTIC_URL__"
+ELASTIC_VERIFY_TLS="__ELASTIC_VERIFY_TLS__"
 PORTAL_PORT="__PORTAL_PORT__"
 ENABLE_ELASTIC_PEER_PROXY="__ENABLE_ELASTIC_PEER_PROXY__"
 PORTAL_AUTH_MODE="__PORTAL_AUTH_MODE__"
@@ -26,6 +28,24 @@ SECRET_FILE=""
 COMPOSE_DOWNLOAD=""
 OIDC_SECRET_JSON=""
 KIBANA_URL="__KIBANA_URL__"
+PORTAL_REDIS_SECRET_ID="__PORTAL_REDIS_SECRET_ID__"
+PORTAL_REDIS_URL="__PORTAL_REDIS_URL__"
+CASE_DATABASE_SECRET_ID="__CASE_DATABASE_SECRET_ID__"
+CASE_DATABASE_HOST="__CASE_DATABASE_HOST__"
+CASE_DATABASE_PORT="__CASE_DATABASE_PORT__"
+CASE_DATABASE_NAME="__CASE_DATABASE_NAME__"
+OLLAMA_BASE_URL="__OLLAMA_BASE_URL__"
+OLLAMA_MODEL="__OLLAMA_MODEL__"
+OLLAMA_API_TOKEN_SECRET_ID="__OLLAMA_API_TOKEN_SECRET_ID__"
+OLLAMA_TIMEOUT_SECONDS="__OLLAMA_TIMEOUT_SECONDS__"
+OLLAMA_MAX_TOKENS="__OLLAMA_MAX_TOKENS__"
+OLLAMA_MAX_CONTEXT_CHARS="__OLLAMA_MAX_CONTEXT_CHARS__"
+OLLAMA_GLOBAL_CONCURRENCY="__OLLAMA_GLOBAL_CONCURRENCY__"
+OLLAMA_MIN_REQUEST_INTERVAL_SECONDS="__OLLAMA_MIN_REQUEST_INTERVAL_SECONDS__"
+AI_ASSISTANT_PROVIDER="__AI_ASSISTANT_PROVIDER__"
+AI_ASSISTANT_MODEL_ID="__AI_ASSISTANT_MODEL_ID__"
+AI_ASSISTANT_REGION="__AI_ASSISTANT_REGION__"
+AI_ASSISTANT_MAX_TOKENS="__AI_ASSISTANT_MAX_TOKENS__"
 
 # shellcheck disable=SC2329
 cleanup() {
@@ -37,6 +57,13 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+  -exec sed -i -E 's#http://([A-Za-z0-9.-]*ubuntu\.com)#https://\1#g' {} +
+if grep -RqsE 'http://[A-Za-z0-9.-]*ubuntu\.com' /etc/apt; then
+  echo "Ubuntu APT sources must use HTTPS" >&2
+  exit 1
+fi
 
 apt-get update
 apt-get install -y docker.io jq curl ca-certificates
@@ -162,12 +189,227 @@ fi
 install -d -m 0700 "$INSTALL_DIR/secrets"
 : > "$INSTALL_DIR/secrets/oidc-client-secret"
 : > "$INSTALL_DIR/secrets/oidc-cookie-secret"
+: > "$INSTALL_DIR/secrets/case-database-url"
+: > "$INSTALL_DIR/secrets/ollama-api-token"
 chmod 600 \
   "$INSTALL_DIR/secrets/oidc-client-secret" \
-  "$INSTALL_DIR/secrets/oidc-cookie-secret"
+  "$INSTALL_DIR/secrets/oidc-cookie-secret" \
+  "$INSTALL_DIR/secrets/case-database-url" \
+  "$INSTALL_DIR/secrets/ollama-api-token"
 chown 65532:65532 \
   "$INSTALL_DIR/secrets/oidc-client-secret" \
   "$INSTALL_DIR/secrets/oidc-cookie-secret"
+chown 10001:10001 \
+  "$INSTALL_DIR/secrets/case-database-url" \
+  "$INSTALL_DIR/secrets/ollama-api-token"
+
+OAUTH2_PROXY_REDIS_URL="redis://oauth2-session:6379/0"
+USE_LOCAL_REDIS="true"
+if [ -n "$PORTAL_REDIS_URL" ]; then
+  OAUTH2_PROXY_REDIS_URL="$PORTAL_REDIS_URL"
+  USE_LOCAL_REDIS="false"
+elif [ -n "$PORTAL_REDIS_SECRET_ID" ]; then
+  REDIS_SECRET_JSON="$(aws secretsmanager get-secret-value \
+    --region "$REGION" \
+    --secret-id "$PORTAL_REDIS_SECRET_ID" \
+    --query SecretString \
+    --output text)"
+  OAUTH2_PROXY_REDIS_URL="$(
+    printf '%s' "$REDIS_SECRET_JSON" | python3 -c '
+import ipaddress
+import json
+import re
+import sys
+import urllib.parse
+
+value = json.load(sys.stdin)
+url = str(value.get("url") or value.get("connection_url") or "").strip()
+if not url:
+    host = str(value.get("host") or value.get("endpoint") or "").strip()
+    port = int(value.get("port") or 6379)
+    username = str(value.get("username") or "").strip()
+    password = str(value.get("auth_token") or value.get("password") or "")
+    if not host or not password or not 1 <= port <= 65535:
+        raise SystemExit(1)
+    userinfo = urllib.parse.quote(username, safe="")
+    if userinfo:
+        userinfo += ":"
+    else:
+        userinfo = ":"
+    url = (
+        "rediss://"
+        + userinfo
+        + urllib.parse.quote(password, safe="")
+        + "@"
+        + host
+        + ":"
+        + str(port)
+        + "/0"
+    )
+
+parsed = urllib.parse.urlsplit(url)
+host = parsed.hostname or ""
+try:
+    ipaddress.ip_address(host)
+except ValueError:
+    if not (
+        len(host) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in host.rstrip(".").split(".")
+        )
+    ):
+        raise SystemExit(1)
+if (
+    parsed.scheme != "rediss"
+    or not host
+    or not parsed.password
+    or parsed.fragment
+    or parsed.query
+    or parsed.path not in ("", "/", "/0")
+):
+    raise SystemExit(1)
+print(url)
+'
+  )"
+  USE_LOCAL_REDIS="false"
+  REDIS_SECRET_JSON=""
+fi
+
+if [ -n "$CASE_DATABASE_SECRET_ID" ]; then
+  CASE_DATABASE_SECRET_JSON="$(aws secretsmanager get-secret-value \
+    --region "$REGION" \
+    --secret-id "$CASE_DATABASE_SECRET_ID" \
+    --query SecretString \
+    --output text)"
+  printf '%s' "$CASE_DATABASE_SECRET_JSON" | \
+    CASE_DATABASE_HOST="$CASE_DATABASE_HOST" \
+    CASE_DATABASE_PORT="$CASE_DATABASE_PORT" \
+    CASE_DATABASE_NAME="$CASE_DATABASE_NAME" \
+    python3 -c '
+import ipaddress
+import json
+import os
+import re
+import sys
+import urllib.parse
+
+value = json.load(sys.stdin)
+url = str(value.get("url") or value.get("database_url") or "").strip()
+if not url:
+    host = str(value.get("host") or os.environ["CASE_DATABASE_HOST"]).strip()
+    port = int(value.get("port") or os.environ["CASE_DATABASE_PORT"])
+    database = str(
+        value.get("dbname") or value.get("database") or os.environ["CASE_DATABASE_NAME"]
+    ).strip()
+    username = str(value.get("username") or "").strip()
+    password = str(value.get("password") or "")
+    if not host or not username or not password or not database or not 1 <= port <= 65535:
+        raise SystemExit(1)
+    url = (
+        "postgresql://"
+        + urllib.parse.quote(username, safe="")
+        + ":"
+        + urllib.parse.quote(password, safe="")
+        + "@"
+        + host
+        + ":"
+        + str(port)
+        + "/"
+        + urllib.parse.quote(database, safe="")
+    )
+
+parsed = urllib.parse.urlsplit(url)
+host = parsed.hostname or ""
+try:
+    ipaddress.ip_address(host)
+except ValueError:
+    if not (
+        len(host) <= 253
+        and all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in host.rstrip(".").split(".")
+        )
+    ):
+        raise SystemExit(1)
+if (
+    parsed.scheme not in {"postgres", "postgresql"}
+    or not host
+    or not parsed.username
+    or parsed.password is None
+    or not parsed.path.strip("/")
+    or parsed.fragment
+):
+    raise SystemExit(1)
+query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+query["sslmode"] = "require"
+print(urllib.parse.urlunsplit(
+    (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), "")
+))
+' > "$INSTALL_DIR/secrets/case-database-url"
+  CASE_DATABASE_SECRET_JSON=""
+  chmod 600 "$INSTALL_DIR/secrets/case-database-url"
+  chown 10001:10001 "$INSTALL_DIR/secrets/case-database-url"
+fi
+
+if [ -n "$OLLAMA_API_TOKEN_SECRET_ID" ]; then
+  OLLAMA_SECRET_VALUE="$(aws secretsmanager get-secret-value \
+    --region "$REGION" \
+    --secret-id "$OLLAMA_API_TOKEN_SECRET_ID" \
+    --query SecretString \
+    --output text)"
+  printf '%s' "$OLLAMA_SECRET_VALUE" | python3 -c '
+import json
+import sys
+
+raw = sys.stdin.read()
+try:
+    value = json.loads(raw)
+except json.JSONDecodeError:
+    token = raw
+else:
+    token = value.get("token") or value.get("api_token") if isinstance(value, dict) else raw
+token = str(token).strip()
+if not 16 <= len(token) <= 512 or any(ord(char) < 33 or ord(char) == 127 for char in token):
+    raise SystemExit(1)
+sys.stdout.write(token)
+' > "$INSTALL_DIR/secrets/ollama-api-token"
+  OLLAMA_SECRET_VALUE=""
+  chmod 600 "$INSTALL_DIR/secrets/ollama-api-token"
+  chown 10001:10001 "$INSTALL_DIR/secrets/ollama-api-token"
+fi
+
+case "$AI_ASSISTANT_PROVIDER" in
+  ollama|local-ollama)
+    if [ ! -s "$INSTALL_DIR/secrets/ollama-api-token" ]; then
+      echo "The Ollama provider requires a non-empty API token file" >&2
+      exit 1
+    fi
+    if ! OLLAMA_BASE_URL="$OLLAMA_BASE_URL" \
+      OLLAMA_TIMEOUT_SECONDS="$OLLAMA_TIMEOUT_SECONDS" \
+      OLLAMA_TOKEN_FILE="$INSTALL_DIR/secrets/ollama-api-token" \
+      python3 - <<'PY'
+import os
+import urllib.request
+
+token = open(os.environ["OLLAMA_TOKEN_FILE"], encoding="utf-8").read().strip()
+request = urllib.request.Request(
+    os.environ["OLLAMA_BASE_URL"].rstrip("/") + "/api/version",
+    headers={"Authorization": f"Bearer {token}"},
+)
+with urllib.request.urlopen(
+    request,
+    timeout=float(os.environ["OLLAMA_TIMEOUT_SECONDS"]),
+) as response:
+    if response.status != 200:
+        raise SystemExit(1)
+PY
+    then
+      echo "The shared Ollama version endpoint is not reachable from the portal host" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
   OIDC_SECRET_JSON="$(aws secretsmanager get-secret-value \
@@ -235,7 +477,7 @@ if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     printf 'OAUTH2_PROXY_EMAIL_DOMAINS=%s\n' '*'
     printf 'OAUTH2_PROXY_UPSTREAMS=%s\n' 'static://202'
     printf 'OAUTH2_PROXY_SESSION_STORE_TYPE=%s\n' 'redis'
-    printf 'OAUTH2_PROXY_REDIS_CONNECTION_URL=%s\n' 'redis://oauth2-session:6379/0'
+    printf 'OAUTH2_PROXY_REDIS_CONNECTION_URL=%s\n' "$OAUTH2_PROXY_REDIS_URL"
     printf 'OAUTH2_PROXY_HTTP_ADDRESS=%s\n' '0.0.0.0:4180'
     printf 'OAUTH2_PROXY_CODE_CHALLENGE_METHOD=%s\n' 'S256'
     printf 'OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL=%s\n' 'false'
@@ -267,6 +509,7 @@ else
 fi
 chmod 600 "$INSTALL_DIR/oauth2-proxy.env"
 OIDC_SECRET_JSON=""
+OAUTH2_PROXY_REDIS_URL=""
 unset OIDC_CLIENT_SECRET OIDC_COOKIE_SECRET COOKIE_SECRET_STANDARD_B64
 
 if [ "$ENABLE_VAULT_DIRECT" = "true" ]; then
@@ -299,7 +542,7 @@ fi
 
 elastic_ready=false
 for attempt in $(seq 1 60); do
-  if curl -fsS -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" http://127.0.0.1:9200/_cluster/health >/dev/null 2>&1; then
+  if curl -fsS -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" "$ELASTIC_URL/_cluster/health" >/dev/null 2>&1; then
     elastic_ready=true
     break
   fi
@@ -311,6 +554,10 @@ if [ "$elastic_ready" != "true" ]; then
 fi
 
 if [ "$ENABLE_ELASTIC_PEER_PROXY" = "true" ]; then
+  if [ "$ELASTIC_URL" != "http://127.0.0.1:9200" ]; then
+    echo "The Elastic peer proxy may only be enabled on the local Elastic host" >&2
+    exit 1
+  fi
   PRIVATE_IP="$(hostname -I | awk '{print $1}')"
   if [ -z "$PRIVATE_IP" ]; then
     echo "Unable to determine the Elastic host private IP" >&2
@@ -362,7 +609,7 @@ if [ -n "$FILEBEAT_API_KEY" ]; then
     curl -sS \
       -H "Authorization: ApiKey $FILEBEAT_API_KEY" \
       -H 'Content-Type: application/json' \
-      -X POST http://127.0.0.1:9200/_security/user/_has_privileges \
+      -X POST "$ELASTIC_URL/_security/user/_has_privileges" \
       -d '{"cluster":["monitor"],"index":[{"names":["filebeat-security-lab-*"],"privileges":["auto_configure","create_doc","view_index_metadata"]}]}'
   )"
   if printf '%s' "$PRIVILEGE_RESPONSE" | jq -e '.has_all_requested == true' >/dev/null 2>&1; then
@@ -374,14 +621,14 @@ if [ "$filebeat_key_ready" != "true" ]; then
   curl -fsS \
     -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
     -H 'Content-Type: application/json' \
-    -X DELETE http://127.0.0.1:9200/_security/api_key \
+    -X DELETE "$ELASTIC_URL/_security/api_key" \
     -d '{"name":"ibm-hc-lab-filebeat-ingest"}' \
     >/dev/null
   KEY_RESPONSE="$(
     curl -fsS \
       -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
       -H 'Content-Type: application/json' \
-      -X POST http://127.0.0.1:9200/_security/api_key \
+      -X POST "$ELASTIC_URL/_security/api_key" \
       -d '{"name":"ibm-hc-lab-filebeat-ingest","role_descriptors":{"filebeat-ingest":{"cluster":["monitor"],"index":[{"names":["filebeat-security-lab-*"],"privileges":["auto_configure","create_doc","view_index_metadata"]}]}}}'
   )"
   FILEBEAT_API_KEY="$(printf '%s' "$KEY_RESPONSE" | jq -r '.encoded // empty')"
@@ -400,7 +647,7 @@ if [ -n "$FILEBEAT_READ_API_KEY" ]; then
     curl -sS \
       -H "Authorization: ApiKey $FILEBEAT_READ_API_KEY" \
       -H 'Content-Type: application/json' \
-      -X POST http://127.0.0.1:9200/_security/user/_has_privileges \
+      -X POST "$ELASTIC_URL/_security/user/_has_privileges" \
       -d '{"index":[{"names":["filebeat-security-lab-*"],"privileges":["read","view_index_metadata"]}]}'
   )"
   if printf '%s' "$PRIVILEGE_RESPONSE" | jq -e '.has_all_requested == true' >/dev/null 2>&1; then
@@ -412,14 +659,14 @@ if [ "$filebeat_read_key_ready" != "true" ]; then
   curl -fsS \
     -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
     -H 'Content-Type: application/json' \
-    -X DELETE http://127.0.0.1:9200/_security/api_key \
+    -X DELETE "$ELASTIC_URL/_security/api_key" \
     -d '{"name":"ibm-hc-lab-filebeat-read"}' \
     >/dev/null
   KEY_RESPONSE="$(
     curl -fsS \
       -u "$ELASTIC_USERNAME:$ELASTIC_PASSWORD" \
       -H 'Content-Type: application/json' \
-      -X POST http://127.0.0.1:9200/_security/api_key \
+      -X POST "$ELASTIC_URL/_security/api_key" \
       -d '{"name":"ibm-hc-lab-filebeat-read","role_descriptors":{"filebeat-read":{"cluster":[],"index":[{"names":["filebeat-security-lab-*"],"privileges":["read","view_index_metadata"]}]}}}'
   )"
   FILEBEAT_READ_API_KEY="$(printf '%s' "$KEY_RESPONSE" | jq -r '.encoded // empty')"
@@ -478,9 +725,9 @@ case "$KIBANA_URL" in
 esac
 
 {
-  printf 'ELASTIC_URL=%s\n' 'http://127.0.0.1:9200'
+  printf 'ELASTIC_URL=%s\n' "$ELASTIC_URL"
   printf 'ELASTIC_READ_API_KEY=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_read_api_key // empty')"
-  printf 'ELASTIC_VERIFY_TLS=%s\n' 'false'
+  printf 'ELASTIC_VERIFY_TLS=%s\n' "$ELASTIC_VERIFY_TLS"
   printf 'ELASTIC_DS_VAULT_AUDIT=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.vault_audit // "logs-hashicorp_vault.audit-lab"')"
   printf 'ELASTIC_DS_PGAUDIT=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.pgaudit // "logs-postgresql.pgaudit-lab"')"
   printf 'ELASTIC_DS_VAULT_RADAR=%s\n' "$(printf '%s' "$SECRET_JSON" | jq -r '.elastic_data_streams.vault_radar // "logs-hashicorp_vault_radar.findings-lab"')"
@@ -503,6 +750,11 @@ esac
     printf 'PORTAL_OIDC_ENABLED=%s\n' 'false'
   fi
   printf 'CASE_DB_PATH=%s\n' '/var/lib/security-portal/cases.db'
+  if [ -s "$INSTALL_DIR/secrets/case-database-url" ]; then
+    printf 'CASE_DATABASE_URL_FILE=%s\n' '/run/secrets/case-database-url'
+  else
+    printf 'CASE_DATABASE_URL_FILE=%s\n' ''
+  fi
   if [ "$ENABLE_VAULT_DIRECT" = "true" ]; then
     printf 'VAULT_ADDR=%s\n' "$VAULT_ADDR"
     printf 'VAULT_AUTH_METHOD=%s\n' 'approle'
@@ -518,26 +770,45 @@ esac
     printf 'VAULT_ADDR=%s\n' ''
     printf 'VAULT_AUTH_METHOD=%s\n' 'none'
   fi
-  printf 'AI_ASSISTANT_PROVIDER=%s\n' '__AI_ASSISTANT_PROVIDER__'
-  printf 'AI_ASSISTANT_MODEL_ID=%s\n' '__AI_ASSISTANT_MODEL_ID__'
-  printf 'AI_ASSISTANT_REGION=%s\n' '__AI_ASSISTANT_REGION__'
-  printf 'AI_ASSISTANT_MAX_TOKENS=%s\n' '__AI_ASSISTANT_MAX_TOKENS__'
+  printf 'AI_ASSISTANT_PROVIDER=%s\n' "$AI_ASSISTANT_PROVIDER"
+  printf 'AI_ASSISTANT_MODEL_ID=%s\n' "$AI_ASSISTANT_MODEL_ID"
+  printf 'AI_ASSISTANT_REGION=%s\n' "$AI_ASSISTANT_REGION"
+  printf 'AI_ASSISTANT_MAX_TOKENS=%s\n' "$AI_ASSISTANT_MAX_TOKENS"
+  printf 'OLLAMA_BASE_URL=%s\n' "$OLLAMA_BASE_URL"
+  printf 'OLLAMA_MODEL=%s\n' "$OLLAMA_MODEL"
+  printf 'OLLAMA_API_TOKEN_FILE=%s\n' '/run/secrets/ollama-api-token'
+  printf 'OLLAMA_TIMEOUT_SECONDS=%s\n' "$OLLAMA_TIMEOUT_SECONDS"
+  printf 'OLLAMA_MAX_TOKENS=%s\n' "$OLLAMA_MAX_TOKENS"
+  printf 'OLLAMA_MAX_CONTEXT_CHARS=%s\n' "$OLLAMA_MAX_CONTEXT_CHARS"
+  printf 'OLLAMA_GLOBAL_CONCURRENCY=%s\n' "$OLLAMA_GLOBAL_CONCURRENCY"
+  printf 'OLLAMA_MIN_REQUEST_INTERVAL_SECONDS=%s\n' "$OLLAMA_MIN_REQUEST_INTERVAL_SECONDS"
+  printf 'OLLAMA_COLD_START_ALLOWED=%s\n' 'false'
+  printf 'AUTOMATION_KILL_SWITCH=%s\n' 'true'
+  printf 'AUTOMATION_EXECUTION_ENABLED=%s\n' 'false'
+  printf 'AUTOMATION_EXECUTION_ACTION_ALLOWLIST=%s\n' ''
 } > "$INSTALL_DIR/backend.env"
 chmod 600 "$INSTALL_DIR/backend.env"
 
 {
-  printf 'ELASTIC_FILEBEAT_URL=%s\n' 'http://127.0.0.1:9200'
+  printf 'ELASTIC_FILEBEAT_URL=%s\n' "$ELASTIC_URL"
   printf 'ELASTIC_FILEBEAT_API_KEY=%s\n' "$FILEBEAT_CONFIG_API_KEY"
 } > "$INSTALL_DIR/filebeat.env"
 chmod 600 "$INSTALL_DIR/filebeat.env"
 unset FILEBEAT_CONFIG_API_KEY
 
 if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
+  if [ "$USE_LOCAL_REDIS" = "true" ]; then
+    COMPOSE_PROFILES="oidc,local-redis"
+  else
+    COMPOSE_PROFILES="oidc"
+  fi
   docker pull quay.io/oauth2-proxy/oauth2-proxy:v7.15.3 >/dev/null
-  docker pull redis:7.4-alpine >/dev/null
-  COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose \
-    -f "$INSTALL_DIR/docker-compose.yml" \
-    up -d --wait --wait-timeout 30 oauth2-session
+  if [ "$USE_LOCAL_REDIS" = "true" ]; then
+    docker pull redis:7.4-alpine >/dev/null
+    COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose \
+      -f "$INSTALL_DIR/docker-compose.yml" \
+      up -d --wait --wait-timeout 30 oauth2-session
+  fi
   COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose \
     -f "$INSTALL_DIR/docker-compose.yml" \
     run --rm --no-deps oauth2-proxy \
@@ -559,7 +830,7 @@ COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-comp
   printf '%s\n' '[Unit]'
   printf '%s\n' 'Description=Information Security Portal'
   printf '%s\n' 'Requires=docker.service'
-  printf '%s\n' 'After=docker.service network-online.target elastic-siem.service'
+  printf '%s\n' 'After=docker.service network-online.target'
   printf '\n'
   printf '%s\n' '[Service]'
   printf '%s\n' 'Type=oneshot'
@@ -584,7 +855,14 @@ while [ "$attempt" -le 30 ]; do
   oauth2_ready=true
   if [ "$PORTAL_AUTH_MODE" = "oidc" ]; then
     oauth2_ready=false
-    if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-session \
+    redis_ready=true
+    if [ "$USE_LOCAL_REDIS" = "true" ]; then
+      redis_ready=false
+      if COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-session; then
+        redis_ready=true
+      fi
+    fi
+    if [ "$redis_ready" = "true" ] \
       && COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --status running --services | grep -qx oauth2-proxy \
       && COMPOSE_PROFILES="$COMPOSE_PROFILES" docker compose -f "$INSTALL_DIR/docker-compose.yml" exec -T frontend \
         wget -q -O /dev/null http://oauth2-proxy:4180/ping; then

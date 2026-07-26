@@ -9,7 +9,7 @@ PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-https://portal.byeongwook-heo.sbx.hashid
 PORTAL_OIDC_CLIENT_ID="${PORTAL_OIDC_CLIENT_ID:-security-portal}"
 PORTAL_OIDC_GROUP="${PORTAL_OIDC_GROUP:-SECURITY_ANALYST}"
 PORTAL_OIDC_SECRET_ID="${PORTAL_OIDC_SECRET_ID:-security-portal-test/keycloak/security-portal-oidc}"
-PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-09c656a6f462df4f2}"
+PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-0f55ad496197cb2b5}"
 PORTAL_ROLE_ARN="${PORTAL_ROLE_ARN:-}"
 
 for command_name in aws curl jq openssl python3; do

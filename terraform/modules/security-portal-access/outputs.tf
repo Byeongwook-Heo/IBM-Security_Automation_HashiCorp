@@ -47,7 +47,7 @@ output "portal_alb_access_log_bucket" {
 
 output "portal_egress_public_ip" {
   description = "Static Elastic IP used by the portal for Keycloak back-channel traffic."
-  value       = try(aws_eip.portal_egress[0].public_ip, null)
+  value       = local.portal_egress_public_ip
 }
 
 output "keycloak_alb_arn" {

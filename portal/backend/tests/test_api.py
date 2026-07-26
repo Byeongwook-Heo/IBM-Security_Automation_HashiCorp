@@ -26,10 +26,20 @@ def mock_mode(monkeypatch):
         "KUBERNETES_API_URL",
         "KUBERNETES_SERVICE_HOST",
         "VAULT_ADDR",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_MODEL",
+        "OLLAMA_API_TOKEN_FILE",
+        "OLLAMA_TIMEOUT_SECONDS",
+        "OLLAMA_MAX_TOKENS",
+        "OLLAMA_MAX_CONTEXT_CHARS",
+        "OLLAMA_GLOBAL_CONCURRENCY",
+        "OLLAMA_MIN_REQUEST_INTERVAL_SECONDS",
+        "OLLAMA_COLD_START_ALLOWED",
     ):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "evidence")
     monkeypatch.delenv("AI_ASSISTANT_MODEL_ID", raising=False)
+    monkeypatch.setattr(assistant, "_OLLAMA_LAST_REQUEST_AT", 0.0)
     monkeypatch.setattr(main, "_elastic_repo", lambda: None)
     main.repo.audit_events.clear()
 
@@ -194,6 +204,318 @@ def test_assistant_bedrock_adapter_sends_and_returns_redacted_text(monkeypatch):
     assert 'unexpected' not in prompt
     assert '[REDACTED]' in data['answer']
     assert 'including the question, conversation, and evidence' in captured['system'][0]['text']
+
+
+def test_assistant_ollama_adapter_sends_sanitized_evidence(monkeypatch, tmp_path):
+    captured = {"calls": []}
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    def fake_get(url, **kwargs):
+        captured["calls"].append(("GET", url))
+        captured["process_headers"] = kwargs["headers"]
+        captured["process_timeout"] = kwargs["timeout"]
+        return assistant.httpx.Response(
+            200,
+            json={"models": [{"name": "security-assistant:approved"}]},
+            request=assistant.httpx.Request("GET", url),
+        )
+
+    def fake_post(url, **kwargs):
+        captured["calls"].append(("POST", url))
+        captured["url"] = url
+        captured.update(kwargs)
+        return assistant.httpx.Response(
+            200,
+            json={"message": {"content": "Review the correlated evidence."}},
+            request=assistant.httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "local-ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "https://ollama.internal.example")
+    monkeypatch.setenv("OLLAMA_MODEL", "security-assistant:approved")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("OLLAMA_MAX_TOKENS", "256")
+    monkeypatch.setenv("OLLAMA_MAX_CONTEXT_CHARS", "6000")
+    monkeypatch.setenv("OLLAMA_GLOBAL_CONCURRENCY", "9")
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(assistant.httpx, "get", fake_get)
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={
+            "message": "Analyze Bearer user-supplied-secret-token",
+            "context": {
+                "kind": "finding",
+                "id": "finding-ollama",
+                "title": "Secret exposure",
+                "severity": "high",
+                "risk_score": 82,
+                "source": "Vault Radar",
+                "resource": "repository/platform",
+                "details": {"owner": "security"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    outbound = captured["json"]
+    prompt = outbound["messages"][1]["content"]
+    assert data["answer"] == "Review the correlated evidence."
+    assert data["provider"] == "shared-ollama"
+    assert data["model"] == "security-assistant:approved"
+    assert data["notice"] is None
+    assert captured["calls"] == [
+        ("GET", "https://ollama.internal.example/api/ps"),
+        ("POST", "https://ollama.internal.example/api/chat"),
+    ]
+    assert captured["process_headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+    assert captured["process_timeout"] == 3
+    assert captured["url"] == "https://ollama.internal.example/api/chat"
+    assert captured["headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+    assert captured["timeout"] == 3
+    assert outbound["stream"] is False
+    assert outbound["options"]["num_predict"] == 256
+    assert "keep_alive" not in outbound
+    assert "user-supplied-secret-token" not in prompt
+    assert "[REDACTED]" in prompt
+    assert "including the question, conversation, and evidence" in outbound["messages"][0]["content"]
+
+
+def test_assistant_ollama_redacts_generated_response(monkeypatch, tmp_path):
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    def fake_get(url, **kwargs):
+        return assistant.httpx.Response(
+            200,
+            json={"models": [{"model": "approved-model:latest"}]},
+            request=assistant.httpx.Request("GET", url),
+        )
+
+    def fake_post(url, **kwargs):
+        return assistant.httpx.Response(
+            200,
+            json={"message": {"content": "Review token=returned-secret-value before proceeding."}},
+            request=assistant.httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(assistant.httpx, "get", fake_get)
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+
+    response = client.post("/api/assistant/chat", json={"message": "Summarize current risk"})
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "shared-ollama"
+    assert "returned-secret-value" not in response.json()["answer"]
+    assert "[REDACTED]" in response.json()["answer"]
+
+
+def test_assistant_ollama_unloaded_model_falls_back_without_cold_start(monkeypatch, tmp_path):
+    captured = {}
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs["headers"]
+        return assistant.httpx.Response(
+            200,
+            json={"models": [{"name": "another-model:latest"}]},
+            request=assistant.httpx.Request("GET", url),
+        )
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(assistant.httpx, "get", fake_get)
+    monkeypatch.setattr(
+        assistant.httpx,
+        "post",
+        lambda *args, **kwargs: pytest.fail("cold-start-disabled Ollama must not receive a chat request"),
+    )
+
+    response = client.post("/api/assistant/chat", json={"message": "Summarize current risk"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "evidence-engine"
+    assert data["model"] is None
+    assert "cold start is disabled" in data["notice"]
+    assert captured["url"] == "http://ollama.internal:11434/api/ps"
+    assert captured["headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+
+
+def test_assistant_ollama_explicit_cold_start_opt_in_allows_chat(monkeypatch, tmp_path):
+    calls = []
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    def fake_get(url, **kwargs):
+        calls.append(("GET", url))
+        assert kwargs["headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+        return assistant.httpx.Response(
+            200,
+            json={"models": []},
+            request=assistant.httpx.Request("GET", url),
+        )
+
+    def fake_post(url, **kwargs):
+        calls.append(("POST", url))
+        assert kwargs["headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+        return assistant.httpx.Response(
+            200,
+            json={"message": {"content": "Reviewed evidence."}},
+            request=assistant.httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_COLD_START_ALLOWED", "true")
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(assistant.httpx, "get", fake_get)
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+
+    response = client.post("/api/assistant/chat", json={"message": "Summarize current risk"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "shared-ollama"
+    assert data["model"] == "approved-model"
+    assert data["notice"] is None
+    assert calls == [
+        ("GET", "http://ollama.internal:11434/api/ps"),
+        ("POST", "http://ollama.internal:11434/api/chat"),
+    ]
+
+
+def test_assistant_ollama_busy_uses_evidence_fallback(monkeypatch, tmp_path):
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(
+        assistant.httpx,
+        "post",
+        lambda *args, **kwargs: pytest.fail("busy Ollama must not receive a request"),
+    )
+
+    assert assistant._OLLAMA_SLOT.acquire(blocking=False)
+    try:
+        response = client.post(
+            "/api/assistant/chat",
+            json={"message": "Summarize current risk", "locale": "en"},
+        )
+    finally:
+        assistant._OLLAMA_SLOT.release()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "evidence-engine"
+    assert data["model"] is None
+    assert "busy or rate-limited" in data["notice"]
+
+
+def test_assistant_ollama_timeout_uses_localized_evidence_fallback(monkeypatch, tmp_path):
+    token_file = tmp_path / "ollama.token"
+    token_file.write_text("shared-ollama-api-token", encoding="utf-8")
+    token_file.chmod(0o600)
+
+    def loaded_get(url, **kwargs):
+        assert kwargs["headers"]["Authorization"] == "Bearer shared-ollama-api-token"
+        return assistant.httpx.Response(
+            200,
+            json={"models": [{"name": "approved-model"}]},
+            request=assistant.httpx.Request("GET", url),
+        )
+
+    def timeout_post(url, **kwargs):
+        raise assistant.httpx.ReadTimeout(
+            "request timed out",
+            request=assistant.httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "local-ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setenv("OLLAMA_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("OLLAMA_MIN_REQUEST_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(assistant.httpx, "get", loaded_get)
+    monkeypatch.setattr(assistant.httpx, "post", timeout_post)
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "현재 위험을 요약해줘", "locale": "ko"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "evidence-engine"
+    assert data["model"] is None
+    assert "응답 시간이 초과" in data["notice"]
+
+
+def test_assistant_ollama_missing_config_uses_evidence_fallback(monkeypatch):
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Summarize current risk", "locale": "en"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "evidence-engine"
+    assert data["model"] is None
+    assert "not configured safely" in data["notice"]
+
+
+def test_assistant_ollama_requires_bearer_token_before_network_access(monkeypatch):
+    monkeypatch.setenv("AI_ASSISTANT_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "approved-model")
+    monkeypatch.setattr(
+        assistant.httpx,
+        "get",
+        lambda *args, **kwargs: pytest.fail("unauthenticated Ollama status request must not be sent"),
+    )
+    monkeypatch.setattr(
+        assistant.httpx,
+        "post",
+        lambda *args, **kwargs: pytest.fail("unauthenticated Ollama chat request must not be sent"),
+    )
+
+    response = client.post(
+        "/api/assistant/chat",
+        json={"message": "Summarize current risk", "locale": "en"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "evidence-engine"
+    assert data["model"] is None
+    assert "not configured safely" in data["notice"]
 
 
 def test_live_qradar_without_destination_fails_closed(monkeypatch):

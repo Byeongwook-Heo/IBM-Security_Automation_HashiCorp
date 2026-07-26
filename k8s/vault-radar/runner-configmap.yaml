@@ -221,15 +221,15 @@ data:
     set -e
 
     if [[ "$scan_rc" -eq 0 ]]; then
-      if [[ ! -s "$report_file" ]]; then
+      if [[ ! -e "$report_file" ]]; then
         scan_rc=65
       else
         finding_count="$(
-          jq -r '
-            if type == "array" then length
-            elif type == "object" then
-              ([to_entries[] | select(.value | type == "array") | .value | length] | add // 0)
-            else 0
+          jq -s -r '
+            if length == 1 and (.[0] | type) == "array" then
+              (.[0] | length)
+            else
+              length
             end
           ' "$report_file" 2>/dev/null || printf '%s' -1
         )"

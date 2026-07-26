@@ -6,9 +6,11 @@ services:
     network_mode: host
     volumes:
       - portal-backend-data:/var/lib/security-portal
+      - ./secrets/case-database-url:/run/secrets/case-database-url:ro
+      - ./secrets/ollama-api-token:/run/secrets/ollama-api-token:ro
 
   oauth2-session:
-    profiles: ["oidc"]
+    profiles: ["local-redis"]
     image: redis:7.4-alpine
     restart: unless-stopped
     user: "999:1000"
@@ -37,9 +39,6 @@ services:
     user: "65532:65532"
     env_file: ./oauth2-proxy.env
     command: ["--trusted-proxy-ip=172.16.0.0/12"]
-    depends_on:
-      oauth2-session:
-        condition: service_healthy
     expose:
       - "4180"
     volumes:

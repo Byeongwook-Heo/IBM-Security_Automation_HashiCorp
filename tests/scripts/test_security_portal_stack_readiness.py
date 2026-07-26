@@ -28,6 +28,22 @@ def test_stack_deployment_is_plan_only_until_explicitly_enabled() -> None:
     script = script_text(STACK_SCRIPT)
 
     assert 'APPLY="${APPLY:-false}"' in script
+    assert 'PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-0f55ad496197cb2b5}"' in script
+    assert (
+        'PORTAL_EGRESS_INSTANCE_ID="${PORTAL_EGRESS_INSTANCE_ID:-'
+        'i-09c656a6f462df4f2}"'
+        in script
+    )
+    assert (
+        'TF_VAR_security_portal_edge_egress_instance_id='
+        '"$PORTAL_EGRESS_INSTANCE_ID"'
+        in script
+    )
+    assert (
+        'TF_VAR_security_portal_edge_manage_target_ingress='
+        '"$PORTAL_EDGE_MANAGE_TARGET_INGRESS"'
+        in script
+    )
     assert 'if [[ "$APPLY" != "true" ]]' in script
     assert "terraform -chdir=\"$TF_DIR\" plan" in script
     assert "configure-security-portal-keycloak.sh" in script
@@ -35,6 +51,11 @@ def test_stack_deployment_is_plan_only_until_explicitly_enabled() -> None:
     assert "PORTAL_AUTH_MODE=oidc" in script
     assert "PORTAL_HTTPS_MODE=alb" in script
     assert "ENABLE_VAULT_DIRECT" in script
+    assert 'PORTAL_REDIS_URL="$PORTAL_REDIS_URL"' in script
+    assert 'CASE_DATABASE_SECRET_ID="$CASE_DATABASE_SECRET_ID"' in script
+    assert 'AI_ASSISTANT_PROVIDER="${AI_ASSISTANT_PROVIDER:-ollama}"' in script
+    assert 'OLLAMA_API_TOKEN_SECRET_ID="$OLLAMA_API_TOKEN_SECRET_ID"' in script
+    assert 'OLLAMA_GLOBAL_CONCURRENCY="$OLLAMA_GLOBAL_CONCURRENCY"' in script
     assert (
         'MANAGED_CERTIFICATE_ADDRESS="module.security_portal_access.'
         'aws_acm_certificate.edge[0]"'

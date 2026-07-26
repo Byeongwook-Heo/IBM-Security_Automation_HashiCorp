@@ -17,6 +17,10 @@ OIDC-protected portal release. It does not use or modify
 - SHA-256 verification of the chunked SSM runtime upload before extraction
 - Direct read-only Vault health, PKI, mount, token, and optional lease metadata
 - Persistent cases, evidence, audit history, and two-person approval records
+  in dedicated Multi-AZ PostgreSQL
+- TLS Valkey-backed OIDC sessions
+- Existing shared Ollama access with cold starts disabled and evidence fallback
+- Narrow AWS Backup selection for the dedicated portal EC2 and RDS
 
 ## 1. Refresh and verify AWS credentials
 
@@ -33,7 +37,7 @@ versions, or the portal-to-Vault security-group rule must be repaired.
 
 ```bash
 AWS_REGION=ap-northeast-2 \
-PORTAL_INSTANCE_ID=i-09c656a6f462df4f2 \
+PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5 \
 VAULT_INSTANCE_ID=<running-vault-node-instance-id> \
 VAULT_SECURITY_GROUP_ID=sg-008ac46b7cedb8ffe \
   scripts/prepare-security-portal-vault-readonly.sh
@@ -58,7 +62,8 @@ ADMIN_CIDR=<operator-public-ip>/32 \
 
 Review the Terraform plan. In particular, confirm:
 
-- the target is `i-09c656a6f462df4f2`
+- the target is `i-0f55ad496197cb2b5`
+- EIP ownership remains with the Elastic host `i-09c656a6f462df4f2`
 - the new ALB name is `ibm-hc-lab-portal-edge`
 - the only existing ALB selected is `hashicorp-lab-dev-keycloak-alb`
 - the certificate covers both `portal.byeongwook-heo.sbx.hashidemos.io` and
@@ -76,13 +81,14 @@ APPLY=true \
 
 The same command performs these operations in order:
 
-1. Apply only `module.security_portal_access`.
+1. Apply only `module.security_portal_access`, keeping the dedicated portal
+   target separate from the Elastic host that retains the EIP.
 2. Verify the Keycloak HTTPS issuer.
 3. Create or update the `security-portal` OIDC client, PKCE configuration,
    `groups` mapper, and `SECURITY_ANALYST` group.
 4. Store or rotate the OIDC client secret in
    `security-portal-test/keycloak/security-portal-oidc`.
-5. Grant the existing portal EC2 role read access through a resource policy.
+5. Grant the dedicated portal EC2 role read access through a resource policy.
 6. Package the portal, upload it through SSM, and verify its SHA-256 digest
    before remote extraction.
 7. Deploy the portal with direct Vault metadata enabled.
@@ -98,12 +104,22 @@ export KEYCLOAK_REALM=master
 export PORTAL_EDGE_SUBNET_IDS=subnet-a,subnet-b
 export PORTAL_CERTIFICATE_ARN=arn:aws:acm:ap-northeast-2:ACCOUNT_ID:certificate/ID
 export PORTAL_OIDC_SECRET_ID=security-portal-test/keycloak/security-portal-oidc
-export AI_ASSISTANT_PROVIDER=evidence
+export PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5
+export PORTAL_EGRESS_INSTANCE_ID=i-09c656a6f462df4f2
+export AI_ASSISTANT_PROVIDER=ollama
+export OLLAMA_BASE_URL=http://10.70.20.182:11434
+export OLLAMA_MODEL=qwen3:8b
+export OLLAMA_API_TOKEN_SECRET_ID=security-portal-test/ollama-api-token
 ```
 
+The Ollama integration checks `/api/ps` before generation and uses the model
+only when it is already loaded. `OLLAMA_COLD_START_ALLOWED=false`, concurrency
+one, a five-second timeout, and request throttling are enforced by deployment.
+Do not pull, restart, or prewarm the shared Ollama service for this portal.
+When the model is cold or busy, the portal answers from allowlisted evidence.
+
 Use `AI_ASSISTANT_PROVIDER=bedrock` only with an approved
-`AI_ASSISTANT_MODEL_ID` and existing EC2 role permission. The evidence provider
-is the safe default and answers only from allowlisted portal metadata.
+`AI_ASSISTANT_MODEL_ID` and existing EC2 role permission.
 
 ## Rollback
 

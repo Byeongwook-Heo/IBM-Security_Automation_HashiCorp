@@ -87,6 +87,18 @@ variable "portal_target_instance_id" {
   }
 }
 
+variable "portal_egress_instance_id" {
+  description = "Optional EC2 instance that retains the managed portal egress EIP. Defaults to portal_target_instance_id."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.portal_egress_instance_id == null ? true : can(regex("^i-[0-9a-f]{8}([0-9a-f]{9})?$", trimspace(var.portal_egress_instance_id)))
+    error_message = "portal_egress_instance_id must be null or a valid EC2 instance ID."
+  }
+}
+
 variable "portal_target_security_group_id" {
   description = "Optional explicit portal instance security group. The first attached group is used when null."
   type        = string
@@ -96,6 +108,24 @@ variable "portal_target_security_group_id" {
   validation {
     condition     = var.portal_target_security_group_id == null ? true : can(regex("^sg-[0-9a-f]{8}([0-9a-f]{9})?$", trimspace(var.portal_target_security_group_id)))
     error_message = "portal_target_security_group_id must be null or a valid security group ID."
+  }
+}
+
+variable "manage_portal_target_ingress" {
+  description = "Manage the ALB-to-portal ingress rule. Disable when the target runtime module already owns that rule."
+  type        = bool
+  default     = true
+}
+
+variable "portal_egress_allocation_id" {
+  description = "Optional existing VPC Elastic IP allocation ID for portal egress. When null, this module creates and owns the EIP."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.portal_egress_allocation_id == null ? true : can(regex("^eipalloc-[0-9a-f]{8}([0-9a-f]{9})?$", trimspace(var.portal_egress_allocation_id)))
+    error_message = "portal_egress_allocation_id must be null or a valid Elastic IP allocation ID."
   }
 }
 

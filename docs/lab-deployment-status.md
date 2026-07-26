@@ -1,11 +1,11 @@
 # Lab Deployment Status
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## Verification Boundary
 
 AWS, SSM, the portal and Keycloak load balancers, service endpoints, and the
-S3 Terraform backend were re-verified on 2026-07-26. The final targeted portal
+S3 Terraform backend were re-verified on 2026-07-27. The final targeted portal
 edge plan returned `No changes`.
 
 The Security Portal HTTPS/OIDC release is live. Continuous HCP Vault Radar
@@ -13,7 +13,7 @@ source credentials and approved Alertmanager notification endpoints remain
 external inputs. StackStorm remains review-only by design; the portal exposes
 dry-run plans and does not execute remediation.
 
-## 2026-07-26 Live Release
+## 2026-07-27 Live Release
 
 - Security Portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
 - Keycloak issuer:
@@ -24,25 +24,32 @@ dry-run plans and does not execute remediation.
   S256 configuration.
 - Keycloak uses the existing two-node deployment and shared RDS database. The
   confidential `security-portal` client maps the `SECURITY_ANALYST` group.
-- The portal EC2 instance now uses the Terraform-managed static egress EIP
-  `52.78.14.203`. Keycloak permits that fixed `/32` for OIDC back-channel
-  traffic instead of relying on an instance-assigned public address.
-- OAuth2 Proxy stores encrypted sessions in an internal, non-persistent Redis
-  container that runs as the image's non-root user. Live logout QA reduced the
-  Redis session-key count from 1 to 0 and returned to the Keycloak login page.
+- The ALB target is the dedicated portal EC2 instance
+  `i-0f55ad496197cb2b5` on approved AMI
+  `hc-security-base-ubuntu-2204-20260629151937`. The existing Elastic host
+  `i-09c656a6f462df4f2` retains EIP `52.78.14.203`; the cutover did not move or
+  replace it.
+- OAuth2 Proxy stores encrypted sessions in the dedicated two-node TLS Valkey
+  replication group. Cases, evidence, audit history, and approval records use
+  the dedicated Multi-AZ PostgreSQL database instead of host-local SQLite.
 - All 20 portal sources loaded without an API failure after a hard browser
   refresh. Direct read-only Vault metadata reported `initialized=true`,
   `sealed=false`, and a live connection.
-- A persistent SQLite initialization race found in live QA was fixed with a
-  thread and process file lock plus cached service factories. The Cases API
-  now returns HTTP 200 after container replacement.
+- The portal can use the existing shared Ollama `qwen3:8b` model only when it
+  is already resident. The live read-only probe found it unloaded, so no model
+  load or generation was triggered and the evidence engine remained active.
+  Cold starts are disabled, concurrency is one, requests are rate-limited and
+  redacted, and failures fall back without changing the shared service.
+- The locked AWS Backup vault protects only the dedicated portal EC2 and RDS
+  through `backup_scope=security-portal-core`. Manual EC2 and RDS backup jobs
+  completed and restore metadata was verified without starting a restore.
 - Runtime packaging now fixes its non-secret artifact umask and normalizes
   application read/execute permissions before the non-root container build.
   The deployed backend and frontend remained healthy after a clean rebuild.
-- Desktop `1440x900` and mobile `390x844` QA found no horizontal document
-  overflow or incoherent overlap. Hash-route navigation, Korean/English,
-  light/dark themes, Cases, evidence-grounded AI analysis, and a review-blocked
-  StackStorm dry-run were exercised through the authenticated UI.
+- Desktop `1440x900` and mobile `390x844` plus `320x720` QA found no horizontal
+  document overflow or incoherent overlap. Hash-route navigation,
+  Korean/English, light/dark themes, Cases, route-aware evidence-grounded AI,
+  modal keyboard focus, and review-blocked automation were exercised.
 - The user identity chip now provides an accessible logout action. OAuth2
   Proxy clears its session and calls the Keycloak OIDC end-session endpoint;
   live QA returned to the Keycloak login page without automatic re-login or a
@@ -51,9 +58,10 @@ dry-run plans and does not execute remediation.
   approved HTTPS origin. The current CIDR-restricted HTTP lab endpoint remains
   available for administration but is intentionally not linked from the HTTPS
   portal until Kibana TLS is configured.
-- 170 Python tests and 9 frontend tests passed. The TypeScript production
-  build, Bash syntax, Terraform formatting and validation, and Git diff checks
-  also passed. Trivy reported no repository secret finding.
+- 208 Python tests and 13 frontend tests passed. The TypeScript production
+  build, Bash syntax, ShellCheck, Terraform formatting and validation, and Git
+  diff checks also passed. Trivy repository secret scanning reported no
+  finding.
 - The post-deployment Terraform portal-edge plan returned `No changes`; no
   resources were changed by that final verification.
 
@@ -121,6 +129,14 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 - Security portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
 - Keycloak: `https://keycloak.byeongwook-heo.sbx.hashidemos.io`
 - Portal edge ALB: `ibm-hc-lab-portal-edge`
+- Dedicated portal runtime: `i-0f55ad496197cb2b5` (`172.31.54.25`)
+- Portal PostgreSQL:
+  `ibm-hc-lab-portal-postgres.cx4i8kgqav98.ap-northeast-2.rds.amazonaws.com:5432`
+- Portal TLS Valkey:
+  `master.ibm-hc-lab-portal-cache.8b9wjy.apn2.cache.amazonaws.com:6379`
+- Shared Ollama endpoint: private `10.70.20.182:11434`, authenticated, cold
+  start disabled
+- AWS Backup vault: `ibm-hc-lab-security-platform-vault`
 - Portal ALB access-log bucket:
   `ibm-hc-lab-p-alb-063455554839-ap-northeast-2`
 - Kibana direct lab endpoint (HTTP, CIDR-restricted, not linked from the
@@ -145,6 +161,14 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 ## Verified
 
 - Security portal health returns `{"status":"ok","mode":"mock+elastic"}`.
+- The portal ALB target group contains only `i-0f55ad496197cb2b5`, and the
+  target is `healthy`.
+- Portal case persistence queries succeed against PostgreSQL, and the Valkey
+  TLS endpoint responds to `PING`.
+- The portal-to-Ollama check is read-only. `qwen3:8b` was not loaded, so the
+  portal did not issue a generate request and used evidence fallback.
+- AWS Backup has completed recovery points for both the portal EC2 and RDS.
+  Restore metadata is available for both; no restore was started.
 - Security portal navigation uses independent hash-routed workspaces rather
   than scrolling to sections on one long page. The deployed overview and data
   security routes were verified at `#/overview` and `#/data-security`.
@@ -366,7 +390,7 @@ external API reported database `ok`.
 - The live application-risk run produced and indexed 202 schema-valid signals.
 - Browser QA passed at desktop and mobile breakpoints with no document overflow
   or console warnings. The 2026-07-14 build resolved Kibana to its HTTP lab
-  host; the 2026-07-26 HTTPS release supersedes that behavior and disables the
+  host; the 2026-07-27 HTTPS release supersedes that behavior and disables the
   portal link until Kibana TLS is configured. Portal dry-run actions remain
   blocked for review.
 - Live inventory found only `hc-base-*` or `hc-security-base-*` EC2 AMIs and no

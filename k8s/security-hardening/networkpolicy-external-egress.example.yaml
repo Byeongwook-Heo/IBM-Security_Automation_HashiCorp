@@ -1,0 +1,19 @@
+# Documentation-only example. Replace TEST-NET-1 before applying this file.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-reviewed-https-destination
+  namespace: security-lab
+spec:
+  podSelector:
+    matchLabels:
+      security.hashidemos.io/external-egress: reviewed
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - protocol: TCP
+          port: 443

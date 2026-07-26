@@ -363,7 +363,7 @@ type AssistantRecommendation = {
 type AssistantReply = {
   messageId: string;
   answer: string;
-  provider: "evidence-engine" | "amazon-bedrock";
+  provider: "evidence-engine" | "amazon-bedrock" | "shared-ollama";
   model?: string;
   confidence: "low" | "medium" | "high";
   evidence: AssistantEvidence[];
@@ -1135,7 +1135,9 @@ function PortalApp() {
   const [dryRunError, setDryRunError] = useState("");
   const [isRunningDryRun, setIsRunningDryRun] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [assistantContextKind, setAssistantContextKind] = useState<AssistantContextKind>("finding");
+  const [assistantContextKind, setAssistantContextKind] = useState<AssistantContextKind>(() =>
+    assistantContextKindForView(activeView),
+  );
   const [assistantMessages, setAssistantMessages] = useState<AssistantConversationMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantError, setAssistantError] = useState("");
@@ -1144,16 +1146,39 @@ function PortalApp() {
   const [automationOverrides, setAutomationOverrides] = useState<AutomationRequest[] | null>(null);
   const [workspaceMutation, setWorkspaceMutation] = useState("");
   const [workspaceMutationError, setWorkspaceMutationError] = useState("");
+  const activeViewRef = useRef(activeView);
+  const assistantContextKindRef = useRef(assistantContextKind);
+  const assistantRequestVersionRef = useRef(0);
+  const assistantAbortControllerRef = useRef<AbortController | null>(null);
+  const assistantTriggerRef = useRef<HTMLButtonElement>(null);
+  const assistantWasOpenRef = useRef(false);
 
   useEffect(() => {
     document.title = t("Information Security Portal");
   }, [locale, t]);
 
   useEffect(() => {
-    const syncViewFromLocation = () => setActiveView(portalViewFromHash(window.location.hash));
+    const syncViewFromLocation = () => {
+      const nextView = portalViewFromHash(window.location.hash);
+      syncPortalView(nextView);
+    };
     window.addEventListener("hashchange", syncViewFromLocation);
     return () => window.removeEventListener("hashchange", syncViewFromLocation);
   }, []);
+
+  useEffect(() => {
+    if (assistantWasOpenRef.current && !assistantOpen) {
+      assistantTriggerRef.current?.focus();
+    }
+    assistantWasOpenRef.current = assistantOpen;
+  }, [assistantOpen]);
+
+  useEffect(
+    () => () => {
+      assistantAbortControllerRef.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     const workspace = document.querySelector<HTMLElement>(".workspace");
@@ -1455,19 +1480,34 @@ function PortalApp() {
     return updated;
   }
 
-  function handleViewChange(view: PortalView) {
+  function invalidateAssistantRequest() {
+    assistantRequestVersionRef.current += 1;
+    assistantAbortControllerRef.current?.abort();
+    assistantAbortControllerRef.current = null;
+    setAssistantLoading(false);
+  }
+
+  function changeAssistantContext(kind: AssistantContextKind, forceReset = false) {
+    if (!forceReset && assistantContextKindRef.current === kind) return;
+    assistantContextKindRef.current = kind;
+    invalidateAssistantRequest();
+    setAssistantContextKind(kind);
+    setAssistantMessages([]);
+    setAssistantError("");
+    setAssistantInput("");
+  }
+
+  function syncPortalView(view: PortalView) {
+    const routeChanged = activeViewRef.current !== view;
+    activeViewRef.current = view;
     setActiveView(view);
+    changeAssistantContext(assistantContextKindForView(view), routeChanged);
+  }
+
+  function handleViewChange(view: PortalView) {
+    syncPortalView(view);
     const nextHash = `#/${view}`;
     if (window.location.hash !== nextHash) window.location.hash = `/${view}`;
-
-    const nextAssistantContext =
-      view === "overview" ? "dashboard" : view === "data-security" ? "db_audit" : "finding";
-    if (nextAssistantContext !== assistantContextKind) {
-      setAssistantContextKind(nextAssistantContext);
-      setAssistantMessages([]);
-      setAssistantError("");
-      setAssistantInput("");
-    }
   }
 
   function defaultTargetIdForAction(action: DryRunAction): string {
@@ -1508,16 +1548,19 @@ function PortalApp() {
   }
 
   function handleAssistantContextChange(kind: AssistantContextKind) {
-    setAssistantContextKind(kind);
-    setAssistantMessages([]);
-    setAssistantError("");
-    setAssistantInput("");
+    if (assistantLoading) return;
+    changeAssistantContext(kind);
   }
 
   async function handleAssistantSend(suggestedMessage?: string) {
     const message = (suggestedMessage ?? assistantInput).trim();
     if (!message || assistantLoading) return;
 
+    assistantAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    assistantAbortControllerRef.current = controller;
+    const requestVersion = assistantRequestVersionRef.current + 1;
+    assistantRequestVersionRef.current = requestVersion;
     const history = assistantMessages.slice(-8).map(({ role, content }) => ({ role, content }));
     const userMessage: AssistantConversationMessage = {
       id: createAssistantMessageId("user"),
@@ -1535,7 +1578,9 @@ function PortalApp() {
         locale,
         context: assistantContext,
         history,
+        signal: controller.signal,
       });
+      if (assistantRequestVersionRef.current !== requestVersion || controller.signal.aborted) return;
       setAssistantMessages((current) => [
         ...current,
         {
@@ -1546,9 +1591,13 @@ function PortalApp() {
         },
       ]);
     } catch (error) {
+      if (assistantRequestVersionRef.current !== requestVersion || controller.signal.aborted) return;
       setAssistantError(error instanceof Error ? error.message : t("AI analysis request failed"));
     } finally {
-      setAssistantLoading(false);
+      if (assistantRequestVersionRef.current === requestVersion) {
+        assistantAbortControllerRef.current = null;
+        setAssistantLoading(false);
+      }
     }
   }
 
@@ -1590,6 +1639,7 @@ function PortalApp() {
       pageMeta={pageMeta}
       assistantOpen={assistantOpen}
       assistantEnabled
+      assistantTriggerRef={assistantTriggerRef}
       onNavigate={handleViewChange}
       onAssistantToggle={() => setAssistantOpen((current) => !current)}
     >
@@ -1841,6 +1891,7 @@ function Shell({
   pageMeta,
   assistantOpen = false,
   assistantEnabled = true,
+  assistantTriggerRef,
   onNavigate,
   onAssistantToggle,
   children,
@@ -1851,6 +1902,7 @@ function Shell({
   pageMeta: PortalViewMeta;
   assistantOpen?: boolean;
   assistantEnabled?: boolean;
+  assistantTriggerRef?: React.RefObject<HTMLButtonElement | null>;
   onNavigate: (view: PortalView) => void;
   onAssistantToggle?: () => void;
   children: React.ReactNode;
@@ -1877,7 +1929,11 @@ function Shell({
   };
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      aria-hidden={assistantOpen ? true : undefined}
+      inert={assistantOpen}
+    >
       <aside className="sidebar" aria-label={t("Security portal navigation")}>
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">
@@ -1975,6 +2031,7 @@ function Shell({
               {label(healthState)}
             </span>
             <button
+              ref={assistantTriggerRef}
               className={`action-button action-button--icon assistant-trigger${assistantOpen ? " assistant-trigger--active" : ""}`}
               type="button"
               aria-label={t(assistantOpen ? "Close AI analyst" : "Open AI analyst")}
@@ -2070,7 +2127,7 @@ function OverviewPage({
   onOpenAudit: (eventId: string) => void;
   onNavigate: (view: PortalView) => void;
 }) {
-  const { t, label } = usePreferences();
+  const { t, label, formatTime: localizedTime } = usePreferences();
   const findingsRisk =
     dashboard.findings.length > 0
       ? Math.round(
@@ -2199,7 +2256,7 @@ function OverviewPage({
                       <td><code>{item.asset}</code></td>
                       <td>{item.source}</td>
                       <td><RiskMeter value={item.riskScore} /></td>
-                      <td>{formatTime(item.eventTime)}</td>
+                      <td>{localizedTime(item.eventTime)}</td>
                       <td>
                         <button className="row-action" type="button" aria-label={t("Review {signal}", { signal: item.title })} onClick={() => openQueueItem(item)}>
                           <ArrowRight size={15} aria-hidden="true" />
@@ -2230,7 +2287,7 @@ function OverviewPage({
                 <dl>
                   <div><dt>{t("Status")}</dt><dd>{label(selectedFinding.status)}</dd></div>
                   <div><dt>{t("Category")}</dt><dd>{label(selectedFinding.subType)}</dd></div>
-                  <div><dt>{t("Seen")}</dt><dd>{formatTime(selectedFinding.eventTime)}</dd></div>
+                  <div><dt>{t("Seen")}</dt><dd>{localizedTime(selectedFinding.eventTime)}</dd></div>
                 </dl>
               </div>
               <div className="focus-timeline">
@@ -2240,7 +2297,7 @@ function OverviewPage({
                     <span>{index + 1}</span>
                     <div>
                       <strong>{t(step.title)}</strong>
-                      <small>{step.source} · {formatTime(step.time)}</small>
+                      <small>{step.source} · {localizedTime(step.time)}</small>
                       <p>{step.detail}</p>
                     </div>
                   </div>
@@ -2263,14 +2320,16 @@ function OverviewPage({
 }
 
 function TelemetryHealthTable({ dashboard }: { dashboard: DashboardData }) {
-  const { t, label } = usePreferences();
+  const { t, label, formatTime: localizedTime } = usePreferences();
   const rows = [
     ...dashboard.streamHealth.map((stream) => ({
       id: `stream-${stream.name}`,
       name: stream.source,
       pipeline: stream.name,
       status: stream.status,
-      freshness: stream.freshness || t("No events"),
+      freshness: stream.freshness
+        ? t("Latest {time}", { time: localizedTime(stream.freshness) })
+        : t("No events"),
       volume: stream.count,
     })),
     ...dashboard.endpointStates
@@ -3020,8 +3079,24 @@ function AssistantPanel({
   const { t, label } = usePreferences();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const latestReply = [...messages].reverse().find((message) => message.reply)?.reply;
-  const providerLabel = latestReply?.provider === "amazon-bedrock" ? "Amazon Bedrock" : t("Evidence grounded");
+  const providerLabelFor = (reply?: AssistantReply) => {
+    if (reply?.provider === "shared-ollama") {
+      return reply.model
+        ? t("Shared Ollama · {model}", { model: reply.model })
+        : t("Shared Ollama");
+    }
+    if (reply?.provider === "amazon-bedrock") {
+      return reply.model
+        ? t("Amazon Bedrock · {model}", { model: reply.model })
+        : "Amazon Bedrock";
+    }
+    return t(reply ? "Evidence mode" : "Evidence grounded");
+  };
+  const providerLabel = providerLabelFor(latestReply);
   const contextOptions: Array<{ kind: AssistantContextKind; label: string }> = [
     { kind: "dashboard", label: t("Dashboard") },
     { kind: "finding", label: t("Finding") },
@@ -3039,14 +3114,40 @@ function AssistantPanel({
     document.body.style.overflow = "hidden";
     inputRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panelRef.current.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose, open]);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !messagesRef.current) return;
@@ -3062,12 +3163,21 @@ function AssistantPanel({
 
   return (
     <div className="assistant-layer">
-      <button className="assistant-backdrop" type="button" aria-label={t("Close AI analyst")} onClick={onClose} />
+      <button
+        className="assistant-backdrop"
+        type="button"
+        tabIndex={-1}
+        aria-label={t("Close AI analyst")}
+        onClick={onClose}
+      />
       <aside
+        ref={panelRef}
         className="assistant-panel"
         role="dialog"
         aria-modal="true"
+        aria-busy={loading}
         aria-labelledby="assistant-title"
+        tabIndex={-1}
       >
         <header className="assistant-header">
           <div className="assistant-heading">
@@ -3109,6 +3219,7 @@ function AssistantPanel({
                 type="button"
                 className={option.kind === contextKind ? "is-active" : ""}
                 aria-pressed={option.kind === contextKind}
+                disabled={loading}
                 key={option.kind}
                 onClick={() => onContextChange(option.kind)}
               >
@@ -3158,7 +3269,7 @@ function AssistantPanel({
                     <Bot size={16} />
                   </span>
                   <strong>{t("AI Analyst")}</strong>
-                  <span>{message.reply?.provider === "amazon-bedrock" ? "Amazon Bedrock" : t("Evidence mode")}</span>
+                  <span>{providerLabelFor(message.reply)}</span>
                 </div>
                 <p className="assistant-answer">{message.content}</p>
                 {message.reply?.notice ? <p className="assistant-notice">{message.reply.notice}</p> : null}
@@ -3331,7 +3442,7 @@ function InvestigationTimeline({ steps }: { steps: InvestigationStep[] }) {
               <span>{localizedTime(step.time)}</span>
               <span>{step.source}</span>
             </div>
-            <h3>{step.title}</h3>
+            <h3>{t(step.title)}</h3>
             <p>{step.detail}</p>
             <span className="compact-meta">{step.meta}</span>
           </div>
@@ -3548,7 +3659,7 @@ function SelectionPanel({ finding, event }: { finding?: Finding; event?: AuditEv
 }
 
 function StreamHealthRow({ stream }: { stream: StreamHealth }) {
-  const { t } = usePreferences();
+  const { t, formatTime: localizedTime } = usePreferences();
   return (
     <article className="stream-row">
       <div>
@@ -3558,7 +3669,11 @@ function StreamHealthRow({ stream }: { stream: StreamHealth }) {
       </div>
       <div className="stream-row__metrics">
         <span>{t("{count} events", { count: stream.count })}</span>
-        <span>{stream.freshness}</span>
+        <span>
+          {stream.freshness
+            ? t("Latest {time}", { time: localizedTime(stream.freshness) })
+            : t("No events")}
+        </span>
       </div>
     </article>
   );
@@ -4081,6 +4196,12 @@ function portalViewFromHash(hash: string): PortalView {
   return legacyRoutes[route] ?? "overview";
 }
 
+function assistantContextKindForView(view: PortalView): AssistantContextKind {
+  if (view === "overview") return "dashboard";
+  if (view === "data-security") return "db_audit";
+  return "finding";
+}
+
 function createAssistantMessageId(role: "user" | "assistant") {
   assistantMessageSequence += 1;
   return `${role}-${Date.now()}-${assistantMessageSequence}`;
@@ -4158,15 +4279,18 @@ async function postAssistantChat({
   locale,
   context,
   history,
+  signal,
 }: {
   message: string;
   locale: "en" | "ko";
   context: AssistantContext;
   history: Array<{ role: "user" | "assistant"; content: string }>;
+  signal?: AbortSignal;
 }): Promise<AssistantReply> {
   const response = await fetch(`${API_BASE}/api/assistant/chat`, {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({
       message,
       locale,
@@ -4202,7 +4326,10 @@ async function postAssistantChat({
 
 function normalizeAssistantReply(value: unknown): AssistantReply {
   const source = isRecord(value) ? value : {};
-  const provider = asText(source.provider) === "amazon-bedrock" ? "amazon-bedrock" : "evidence-engine";
+  const providerValue = asText(source.provider);
+  const provider = ["evidence-engine", "amazon-bedrock", "shared-ollama"].includes(providerValue)
+    ? (providerValue as AssistantReply["provider"])
+    : "evidence-engine";
   const confidenceValue = asText(source.confidence, "low");
   const confidence = ["low", "medium", "high"].includes(confidenceValue)
     ? (confidenceValue as AssistantReply["confidence"])
@@ -4465,7 +4592,7 @@ function createApplicationRiskSummary(signals: RiskSignal[]): ApplicationRiskSum
     openCritical: signals.filter((signal) => signal.riskScore >= 75).length,
     sources: createOptions(signals.map((signal) => signal.sourceName)),
     topApplications: createOptions(signals.map((signal) => signal.applicationName)),
-    lastObservedAt: latestTime(signals.map((signal) => ({ eventTime: signal.observedAt }))).replace("Latest ", ""),
+    lastObservedAt: latestTimestamp(signals.map((signal) => ({ eventTime: signal.observedAt }))),
   };
 }
 
@@ -4937,21 +5064,21 @@ function createStreamHealth(
       source: "Vault audit",
       count: summary.vault_audit_events ?? vaultEvents.length,
       status: streamStatus(summary.vault_audit_events ?? vaultEvents.length, endpointByKey.get("vaultAuditEvents")),
-      freshness: latestTime(vaultEvents),
+      freshness: latestTimestamp(vaultEvents),
     },
     {
       name: "logs-postgresql-pgaudit",
       source: "PostgreSQL pgAudit",
       count: summary.db_audit_events ?? dbEvents.length,
       status: streamStatus(summary.db_audit_events ?? dbEvents.length, endpointByKey.get("dbAuditEvents")),
-      freshness: latestTime(dbEvents),
+      freshness: latestTimestamp(dbEvents),
     },
     {
       name: "logs-vault-radar",
       source: "Vault Radar",
       count: summary.vault_radar_findings ?? findings.length,
       status: streamStatus(summary.vault_radar_findings ?? findings.length, endpointByKey.get("vaultRadarFindings")),
-      freshness: latestTime(findings.map(findingToEventLike)),
+      freshness: latestTimestamp(findings.map(findingToEventLike)),
     },
   ];
 }
@@ -5047,14 +5174,13 @@ function findingToEventLike(finding: Finding): AuditEvent {
   };
 }
 
-function latestTime(events: Array<{ eventTime: string }>) {
+function latestTimestamp(events: Array<{ eventTime: string }>) {
   const latest = events
     .map((event) => Date.parse(event.eventTime))
     .filter((time) => Number.isFinite(time))
     .sort((a, b) => b - a)[0];
 
-  if (!latest) return "No recent events";
-  return `Latest ${formatTime(new Date(latest).toISOString())}`;
+  return latest ? new Date(latest).toISOString() : "";
 }
 
 function createOptions(values: string[]) {
@@ -5127,17 +5253,6 @@ function severityDefaultScore(value: unknown) {
   if (severity === "medium") return 55;
   if (severity === "low") return 28;
   return 12;
-}
-
-function formatTime(value: string) {
-  const time = Date.parse(value);
-  if (!Number.isFinite(time)) return "n/a";
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(time));
 }
 
 function formatDuration(seconds: number) {

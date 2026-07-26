@@ -2,10 +2,10 @@
 
 ## Live preparation
 
-The portal-to-Vault path was prepared and verified on 2026-07-24 before the
-operator AWS session expired:
+The portal-to-Vault path was re-verified on 2026-07-27 after the dedicated
+runtime cutover:
 
-- Portal runtime: EC2 `i-09c656a6f462df4f2`
+- Portal runtime: EC2 `i-0f55ad496197cb2b5`
 - Vault endpoint:
   `security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200`
 - Vault ingress source: portal private IPv4 `/32`
@@ -46,7 +46,7 @@ AppRole values without exposing them to the deployment workstation.
 
 ```bash
 AWS_REGION=ap-northeast-2 \
-PORTAL_INSTANCE_ID=i-09c656a6f462df4f2 \
+PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5 \
 VAULT_INSTANCE_ID=<running-vault-node-instance-id> \
 VAULT_SECURITY_GROUP_ID=sg-008ac46b7cedb8ffe \
 VAULT_ROOT_TOKEN_FILE=/etc/vault.d/root-token \

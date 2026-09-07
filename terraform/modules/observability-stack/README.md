@@ -1,81 +1,23 @@
 # Observability Stack Module
 
-This module is the Phase 4 scaffold for replacing Instana with a self-managed observability host.
+[한국어](README.md) · [English](README.en.md)
 
-It creates a conservative EC2 base for:
+## 목적
 
-- Prometheus metrics on port `9090`
-- Grafana dashboards on port `3000`
-- Loki logs on port `3100`
-- Tempo traces on port `3200`
-- OpenTelemetry OTLP gRPC on port `4317`
-- OpenTelemetry OTLP HTTP on port `4318`
+자체 운영 관측 스택용 EC2와 Docker Compose 구성을 준비하는 모듈입니다.
 
-## What It Creates
+## 기대 효과
 
-- One EC2 instance in an existing subnet.
-- Optional module-managed security group for admin CIDR access.
-- Attachment point for existing security groups.
-- Optional IAM role and instance profile with SSM Session Manager access, or an existing instance profile supplied by `iam_instance_profile_name`.
-- Encrypted gp3 root volume.
-- Cloud-init scaffold under `/opt/observability-stack`.
+- Prometheus·Grafana·Loki·Tempo·OpenTelemetry의 연결 조건을 검토합니다.
 
-The module writes a Docker Compose scaffold but does not start the observability services. Operators must review retention, TLS, credentials, scrape targets, and ingestion paths before starting anything.
+## 주요 기능과 구성
 
-## Example
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
 
-```hcl
-module "observability_stack" {
-  source = "../../modules/observability-stack"
+## 시작하기
 
-  enabled     = true
-  name_prefix = "hc-security-lab"
-  vpc_id      = var.vpc_id
-  subnet_id   = var.private_subnet_id
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
 
-  security_group_ids = [
-    aws_security_group.internal_observability_clients.id,
-  ]
+## 범위와 제약사항
 
-  admin_cidr_blocks = [
-    "x.x.x.x/32",
-  ]
-
-  enable_grafana_access    = true
-  enable_prometheus_access = false
-  enable_loki_access       = false
-  enable_tempo_access      = false
-  enable_otel_grpc_access  = false
-  enable_otel_http_access  = false
-  iam_instance_profile_name = "existing-ssm-instance-profile"
-
-  tags = var.tags
-}
-```
-
-For private access, leave `admin_cidr_blocks` empty and use SSM port forwarding:
-
-```bash
-aws ssm start-session \
-  --target "$(terraform output -raw observability_stack_instance_id)" \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["3000"],"localPortNumber":["3000"]}'
-```
-
-## Safety Defaults
-
-- No public IP is assigned by default.
-- Only Grafana is marked eligible for admin CIDR ingress by default, and no ingress is created unless `admin_cidr_blocks` is non-empty.
-- SSH is disabled unless `enable_ssh_access` is true.
-- The stack is not auto-started by cloud-init.
-- The AMI name must start with `hc-security-base-` or `hc-base-`.
-- IAM resources are not created by default. Set `iam_instance_profile_name` to an existing profile, or explicitly set `create_iam_instance_profile = true` only when IAM creation is allowed.
-
-## Next Integration Work
-
-- Wire the module into an environment after VPC, subnet, and security group IDs are confirmed.
-- Decide whether services run directly on this host, on Nomad, or on Kubernetes.
-- Add real Prometheus scrape targets for Vault, Boundary, Terraform Enterprise, portal services, and AWS exporters.
-- Add Loki log forwarders and Tempo trace exporters.
-- Store Grafana admin credentials and data source tokens in an approved secret store.
-- Feed service health, alerts, logs, and trace links into the Information Security Portal.
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

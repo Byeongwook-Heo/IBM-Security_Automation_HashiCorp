@@ -1,84 +1,23 @@
-# EKS security hardening
+# Kubernetes Security Controls
 
-These assets stage security controls for the existing `security-lab` namespace.
-The deployment script is read-only by default: it captures the current EKS
-control-plane audit posture and workload compatibility, then performs
-server-side dry-runs without changing the cluster.
+[한국어](README.md) · [English](README.en.md)
 
-## Control stages
+## 목적
 
-| Control | Staged behavior | Enforced behavior |
-| --- | --- | --- |
-| Pod Security Admission | `restricted` audit and warning labels | Adds the `restricted` enforce label |
-| Workload admission policy | Audits and warns for `:latest`, privileged containers, and host namespaces | Denies matching Pods |
-| Image integrity policy | Audits and warns when an image is not pinned by SHA-256 digest | Optional deny with `ENFORCE_IMAGE_DIGESTS=true` |
-| NetworkPolicy | Server-side validation only | Applies baseline DNS/same-namespace allows, then default-deny ingress and egress |
+Pod Security·admission·네트워크 정책을 사전 검증하고 단계적으로 적용하는 구성입니다.
 
-The admission policies use the Kubernetes native
-`ValidatingAdmissionPolicy` API. No admission controller is installed.
+## 기대 효과
 
-## Preview
+- 감사·경고와 실제 차단 모드의 차이를 확인합니다.
 
-Set the EKS cluster name. The default `DRY_RUN=true` captures reports under a
-private temporary directory and validates every selected manifest through the
-API server:
+## 주요 기능과 구성
 
-```bash
-EKS_CLUSTER_NAME=ibm-hc-lab-test-eks \
-  scripts/deploy-eks-security-hardening.sh
-```
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
 
-Apply only the non-blocking audit and warning stage:
+## 시작하기
 
-```bash
-DRY_RUN=false \
-EKS_CLUSTER_NAME=ibm-hc-lab-test-eks \
-  scripts/deploy-eks-security-hardening.sh
-```
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
 
-Enforcement requires all three explicit values. The script captures reports,
-checks existing workload compatibility, verifies that the running EKS VPC CNI
-has network-policy enforcement enabled, and completes a server-side dry-run
-before any apply:
+## 범위와 제약사항
 
-```bash
-DRY_RUN=false \
-ENFORCE=true \
-ENFORCEMENT_ACK=security-lab \
-EKS_CLUSTER_NAME=ibm-hc-lab-test-eks \
-  scripts/deploy-eks-security-hardening.sh
-```
-
-The script refuses incompatible workloads by default. Review the generated
-`workload-compatibility.json` before using the emergency
-`ALLOW_INCOMPATIBLE_WORKLOADS=true` override.
-
-`networkpolicy-external-egress.example.yaml` is documentation-only. Replace its
-TEST-NET address and labels with reviewed destinations before applying it
-separately.
-
-## Digest and Cosign flow
-
-Native CEL admission can require immutable image digests, but it cannot verify
-a Cosign signature cryptographically. Keep signature verification in the build
-or promotion pipeline:
-
-1. Build the image and record its registry SHA-256 digest.
-2. Sign the digest with Cosign using the approved keyless identity or KMS key.
-3. Verify the signature and certificate identity before deployment.
-4. Render only `repository@sha256:<64 lowercase hex characters>` into the
-   workload manifest.
-5. Run this script with `ENFORCE_IMAGE_DIGESTS=true` only after every existing
-   workload passes the compatibility report.
-
-Example keyless verification:
-
-```bash
-cosign verify \
-  --certificate-identity-regexp='^https://github.com/approved-org/' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  'registry.example.com/security/app@sha256:<digest>'
-```
-
-Do not put signing keys, registry credentials, or cloud credentials in these
-manifests.
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

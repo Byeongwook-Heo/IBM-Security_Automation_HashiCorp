@@ -1,25 +1,23 @@
-# Portal
+# Security Portal
 
-Run local mock mode with `docker compose -f portal/docker-compose.yml up --build`. Backend exposes FastAPI endpoints; frontend fetches from the backend.
+[한국어](README.md) · [English](README.en.md)
 
-## AI security analyst
+## 목적
 
-The portal includes a contextual AI analyst at `POST /api/assistant/chat`. It accepts only bounded finding, DB audit, application-risk, or dashboard metadata. Secret assignments, bearer/JWT tokens, AWS credentials, GitHub and HashiCorp tokens, and private keys are redacted before provider invocation. Responses remain review-only and can link to an existing dry-run action, but cannot execute remediation.
+보안 신호와 감사 정보를 검토하는 FastAPI·React 포털입니다.
 
-The safe default is the local evidence engine:
+## 기대 효과
 
-```dotenv
-AI_ASSISTANT_PROVIDER=evidence
-AI_ASSISTANT_MODEL_ID=
-AI_ASSISTANT_REGION=ap-northeast-2
-AI_ASSISTANT_MAX_TOKENS=700
-```
+- 로컬 evidence 또는 선택적 Bedrock 분석 보조와 검토 중심의 대응 흐름을 이해합니다.
 
-Amazon Bedrock is optional:
+## 주요 기능과 구성
 
-```dotenv
-AI_ASSISTANT_PROVIDER=bedrock
-AI_ASSISTANT_MODEL_ID=<approved-model-id-or-inference-profile>
-```
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
 
-The portal instance role must be granted `bedrock:InvokeModel` for only the approved model or inference profile before enabling Bedrock. If Bedrock is unavailable, the endpoint fails over to evidence mode without exposing the provider error or user content.
+## 시작하기
+
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
+
+## 범위와 제약사항
+
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

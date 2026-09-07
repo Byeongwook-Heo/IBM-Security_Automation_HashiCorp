@@ -1,22 +1,23 @@
-# Vault Radar continuous scans
+# Vault Radar Continuous Scans
 
-This directory schedules three metadata-minimized Vault Radar scans:
+[한국어](README.md) · [English](README.en.md)
 
-- Terraform Enterprise variables every two hours.
-- A configured S3 bucket every four hours.
-- EC2 and EKS inventory metadata every six hours.
+## 목적
 
-The runtime image is supplied at deploy time and must be immutable
-(`repository@sha256:<digest>`). It must contain `vault-radar`, AWS CLI v2,
-`bash`, `curl`, and `jq`. The manifests intentionally contain no credentials,
-license text, scan output, or mutable image tags.
+Terraform 변수·S3·AWS 인벤토리 대상의 정기 스캔 구성입니다.
 
-Credentials are mounted from the `vault-radar-continuous-scan-secrets`
-Kubernetes Secret. AWS access uses the IRSA role on the service account; no
-static AWS keys are accepted by the deploy script. Raw scan output, CLI logs,
-and generated AWS inventory exist only in memory-backed `emptyDir` volumes and
-are removed before a successful pod exits. Prometheus receives only source,
-success, duration, freshness, and finding-count metrics through Pushgateway.
+## 기대 효과
 
-See `docs/operations-continuity.md` for the secret contract, IRSA permissions,
-deployment procedure, alerts, and failure handling.
+- 원시 결과 노출을 줄이고 성공·신선도·발견 건수 지표를 확인합니다.
+
+## 주요 기능과 구성
+
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
+
+## 시작하기
+
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
+
+## 범위와 제약사항
+
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

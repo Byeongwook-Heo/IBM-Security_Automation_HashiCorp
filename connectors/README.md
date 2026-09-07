@@ -1,28 +1,23 @@
-# Connectors
-Each product directory has mock and real adapters. Real adapters read endpoints,
-tokens, API paths, JSON roots, timeouts, and TLS behavior from environment
-variables only. No connector prints token values.
+# Product Connectors
 
-QRadar sender supports dry-run JSON syslog and LEEF payload generation.
+[한국어](README.md) · [English](README.en.md)
 
-## Real connector runner
-```bash
-python connectors/run.py vault --limit 20
-python connectors/run.py boundary --qradar-host "$QRADAR_SYSLOG_HOST"
-python connectors/run.py all --limit 10
-```
+## 목적
 
-By default QRadar sends are dry-run payloads. Add `--qradar-live` only after
-the syslog target is confirmed.
+제품 API의 이벤트를 공통 형식으로 처리하는 Mock·실제 어댑터 모음입니다.
 
-## Common environment variables
-- `CONNECTOR_VERIFY_TLS`: global TLS verification default, `true` by default.
-- `<PRODUCT>_BASE_URL` or product alias such as `VAULT_ADDR`.
-- `<PRODUCT>_API_TOKEN` or product alias such as `VAULT_TOKEN`.
-- `<PRODUCT>_API_PATH`: endpoint path to call.
-- `<PRODUCT>_JSON_ROOT`: optional dotted path for extracting a list from the
-  JSON response, for example `data.items`.
-- `<PRODUCT>_TIMEOUT`: request timeout in seconds.
+## 기대 효과
 
-Default API paths are intentionally conservative and can be overridden per lab
-endpoint without code changes.
+- 제품별 API 설정과 QRadar 전달 경계를 비교합니다.
+
+## 주요 기능과 구성
+
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
+
+## 시작하기
+
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
+
+## 범위와 제약사항
+
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

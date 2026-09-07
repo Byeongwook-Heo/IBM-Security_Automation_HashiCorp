@@ -1,1 +1,23 @@
-Migration placeholder for future PostgreSQL persistence.
+# Database Migrations
+
+[한국어](README.md) · [English](README.en.md)
+
+## 목적
+
+데이터베이스 마이그레이션 구성을 위한 준비 디렉터리입니다.
+
+## 기대 효과
+
+- 구현해야 할 검증·관리 영역을 구분합니다.
+
+## 주요 기능과 구성
+
+- 현재는 안내 문서만 포함
+
+## 시작하기
+
+상위 프로젝트의 실행·테스트 안내를 먼저 확인하세요.
+
+## 범위와 제약사항
+
+이 디렉터리에는 실행 가능한 테스트 또는 마이그레이션 구현이 아직 없습니다.

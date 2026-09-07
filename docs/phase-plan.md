@@ -165,7 +165,7 @@ execution-disabled by default.
 Status: documentation, QA, CI, and guarded S3 remote state are complete. Git
 branch/commit/push is handled separately from AWS deployment.
 
-- Maintain `docs/architecture.md`, `docs/lab-deployment-status.md`, and this
+- Maintain `docs/architecture.md`, `docs/runbook.md`, and this
   phase plan as the deployment record.
 - Keep Terraform execution, scanner, OpenCost, and recovery commands in
   `docs/runbook.md`.

@@ -1,19 +1,23 @@
-# Terraform
+# Security Lab Terraform
 
-Modular environment-based Terraform skeleton. Run `terraform fmt -recursive` and validate each env. Real account IDs and tokens must be supplied as variables.
+[한국어](README.md) · [English](README.en.md)
 
-## Elastic SIEM
+## 목적
 
-The lab environment includes an optional `elastic-siem` module for Phase 1. It deploys Elasticsearch and Kibana on one approved EC2 AMI and stores generated bootstrap credentials in AWS Secrets Manager.
+환경별 AWS 보안 랩을 구성하는 Terraform 모듈과 예제입니다.
 
-Example:
+## 기대 효과
 
-```bash
-cd terraform/envs/lab
-terraform plan \
-  -var='enable_elastic_siem=true' \
-  -var='aws_region=ap-northeast-2' \
-  -var='elastic_siem_admin_cidr_blocks=["x.x.x.x/32"]'
-```
+- 변수와 실행 계획으로 선택적 구성 요소의 의존성을 검토합니다.
 
-See `../docs/elastic-siem.md` before applying.
+## 주요 기능과 구성
+
+- 세부 설정·전제 조건·명령과 운영 계약은 아래 가이드에 정의되어 있습니다.
+
+## 시작하기
+
+[상세 구성 가이드 (English)](GUIDE.en.md)를 읽고 대상 환경과 입력값을 확인한 뒤 진행하세요. 명령은 가이드에 표시된 저장소 기준 경로에서 실행합니다.
+
+## 범위와 제약사항
+
+구성 예제만으로 실환경 검증이 완료되는 것은 아닙니다. 실제 변경 명령은 대상·권한·비용을 확인한 후 실행하세요. 제품 라이선스와 외부 API 접근 권한이 별도로 필요할 수 있습니다.

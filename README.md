@@ -1,5 +1,13 @@
 # IBM Security + HashiCorp on AWS Security Lab
 
+## 저장소 관리
+
+이 저장소의 `main`이 통합 보안 플랫폼의 기준 브랜치입니다. 기존 `security-platform-phases-0-8`의 최신 구현을 합쳤으며 별도 중복 저장소를 만들지 않았습니다. 기존 브랜치와 Git 이력은 보존합니다.
+
+실제 개인 경로·운영 계정 ID·접속 대상 기본값은 공개용 예시 또는 명시적 입력으로 바꿨습니다. 배포 스크립트에는 본인 환경의 `PORTAL_INSTANCE_ID`, `PORTAL_EGRESS_INSTANCE_ID`, `VAULT_ADDR`, `CASE_DATABASE_SECRET_ID` 등을 지정하세요. `example.invalid`, `192.0.2.*`, `*-00000000000000000`는 실행 가능한 환경 값이 아닙니다. 과거 운영 기록은 현재 상태를 보장하지 않습니다.
+
+이번 통합은 Git 소스 정리만 수행했으며 실제 AWS 배포나 서비스 변경은 하지 않았습니다. 과거 커밋의 식별정보·작성자 이메일 제거에는 별도의 이력 재작성 승인이 필요합니다.
+
 ## Project purpose
 This repository is a production-like security lab blueprint integrating IBM QRadar, IBM Verify, IBM Guardium, IBM Instana, IBM Turbonomic, IBM Kubecost, IBM Concert and HashiCorp Terraform, Vault, Vault Radar, Nomad, and Boundary on AWS. The target operating model is a higher-level **Information Security Portal** that summarizes, correlates, approves, automates, and deep-links into the source products rather than replacing their native consoles.
 

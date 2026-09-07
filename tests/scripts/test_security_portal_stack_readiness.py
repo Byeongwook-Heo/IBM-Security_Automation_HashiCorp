@@ -28,10 +28,10 @@ def test_stack_deployment_is_plan_only_until_explicitly_enabled() -> None:
     script = script_text(STACK_SCRIPT)
 
     assert 'APPLY="${APPLY:-false}"' in script
-    assert 'PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-0f55ad496197cb2b5}"' in script
+    assert 'PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:?Set PORTAL_INSTANCE_ID for your environment}"' in script
     assert (
-        'PORTAL_EGRESS_INSTANCE_ID="${PORTAL_EGRESS_INSTANCE_ID:-'
-        'i-09c656a6f462df4f2}"'
+        'PORTAL_EGRESS_INSTANCE_ID="${PORTAL_EGRESS_INSTANCE_ID:'
+        '?Set PORTAL_EGRESS_INSTANCE_ID for your environment}"'
         in script
     )
     assert (

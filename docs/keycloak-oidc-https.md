@@ -1,14 +1,16 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Keycloak OIDC and HTTPS for the Security Portal
 
 This runbook prepares production-style authentication for the existing lab portal without changing the unrelated `security-portal-test-alb`.
 
 ## Target architecture
 
-- Portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
-- Keycloak: `https://keycloak.byeongwook-heo.sbx.hashidemos.io`
-- Route53 public zone: `byeongwook-heo.sbx.hashidemos.io`
-- Portal target: dedicated EC2 `i-0f55ad496197cb2b5`, HTTP port `8080`
-- Portal egress EIP owner: Elastic EC2 `i-09c656a6f462df4f2`
+- Portal: `https://portal.example.invalid`
+- Keycloak: `https://keycloak.example.invalid`
+- Route53 public zone: `example.invalid`
+- Portal target: dedicated EC2 `i-00000000000000000`, HTTP port `8080`
+- Portal egress EIP owner: Elastic EC2 `i-00000000000000000`
 - Portal edge: a new dedicated ALB named `ibm-hc-lab-portal-edge`
 - Keycloak edge: a new HTTPS listener on the existing `hashicorp-lab-dev-keycloak-alb`
 - TLS: one regional ACM certificate covering both names, validated through Route53
@@ -41,8 +43,8 @@ Create a confidential OIDC client in the required realm:
 | Client ID | `security-portal` |
 | Client authentication | On |
 | Standard flow | On |
-| Valid redirect URI | `https://portal.byeongwook-heo.sbx.hashidemos.io/oauth2/callback` |
-| Web origin | `https://portal.byeongwook-heo.sbx.hashidemos.io` |
+| Valid redirect URI | `https://portal.example.invalid/oauth2/callback` |
+| Web origin | `https://portal.example.invalid` |
 
 Add a Group Membership mapper:
 
@@ -57,10 +59,10 @@ Assign portal users at least one backend role such as `SECURITY_ANALYST`. The de
 The issuer must resolve as:
 
 ```text
-https://keycloak.byeongwook-heo.sbx.hashidemos.io/realms/<realm>
+https://keycloak.example.invalid/realms/<realm>
 ```
 
-If Keycloak returns its old ALB hostname or an HTTP issuer after the HTTPS listener is added, configure the Keycloak runtime to trust `X-Forwarded-*` headers and use the external hostname. For current Keycloak distributions this normally means `KC_PROXY_HEADERS=xforwarded` and `KC_HOSTNAME=https://keycloak.byeongwook-heo.sbx.hashidemos.io`. This repository does not alter the existing Keycloak service.
+If Keycloak returns its old ALB hostname or an HTTP issuer after the HTTPS listener is added, configure the Keycloak runtime to trust `X-Forwarded-*` headers and use the external hostname. For current Keycloak distributions this normally means `KC_PROXY_HEADERS=xforwarded` and `KC_HOSTNAME=https://keycloak.example.invalid`. This repository does not alter the existing Keycloak service.
 
 ## 2. Store OIDC secrets
 
@@ -90,21 +92,21 @@ Supply a non-tracked `*.auto.tfvars` file:
 enable_security_portal_edge                    = true
 security_portal_edge_create_certificate        = true
 security_portal_edge_subnet_ids                = ["subnet-public-az-a", "subnet-public-az-b"]
-security_portal_edge_allowed_cidr_blocks       = ["203.0.113.10/32"]
+security_portal_edge_allowed_cidr_blocks       = ["192.0.2.10/32"]
 security_portal_edge_target_security_group_id  = "sg-portal-instance"
-security_portal_edge_target_instance_id        = "i-0f55ad496197cb2b5"
-security_portal_edge_egress_instance_id        = "i-09c656a6f462df4f2"
+security_portal_edge_target_instance_id        = "i-00000000000000000"
+security_portal_edge_egress_instance_id        = "i-00000000000000000"
 security_portal_edge_manage_target_ingress     = false
 ```
 
 The defaults already select:
 
-- `portal.byeongwook-heo.sbx.hashidemos.io`
-- `keycloak.byeongwook-heo.sbx.hashidemos.io`
+- `portal.example.invalid`
+- `keycloak.example.invalid`
 - `hashicorp-lab-dev-keycloak-alb`
-- portal target `i-0f55ad496197cb2b5`
-- egress EIP owner `i-09c656a6f462df4f2`
-- Route53 zone `byeongwook-heo.sbx.hashidemos.io`
+- portal target `i-00000000000000000`
+- egress EIP owner `i-00000000000000000`
+- Route53 zone `example.invalid`
 
 Review and apply:
 
@@ -117,7 +119,7 @@ terraform -chdir=terraform/envs/lab apply security-portal-edge.tfplan
 The module creates a new portal ALB. It only looks up the exact Keycloak ALB name and adds:
 
 - HTTPS listener `443`, forwarding to the target group already used by its HTTP listener
-- A host-specific HTTP redirect for `keycloak.byeongwook-heo.sbx.hashidemos.io`
+- A host-specific HTTP redirect for `keycloak.example.invalid`
 - Restricted security-group ingress on `443`
 - Route53 alias records for both custom domains
 - A private, public-access-blocked S3 bucket with 90-day lifecycle for portal
@@ -131,7 +133,7 @@ Before enabling portal OIDC:
 
 ```bash
 curl -fsS \
-  https://keycloak.byeongwook-heo.sbx.hashidemos.io/realms/<realm>/.well-known/openid-configuration \
+  https://keycloak.example.invalid/realms/<realm>/.well-known/openid-configuration \
   | jq -r '.issuer'
 ```
 
@@ -142,15 +144,15 @@ The issuer must exactly equal the configured HTTPS issuer. Resolve any Keycloak 
 After refreshing local AWS credentials:
 
 ```bash
-export ADMIN_CIDR="203.0.113.10/32"
+export ADMIN_CIDR="192.0.2.10/32"
 export PORTAL_AUTH_MODE="oidc"
 export PORTAL_HTTPS_MODE="alb"
-export PORTAL_PUBLIC_URL="https://portal.byeongwook-heo.sbx.hashidemos.io"
-export PORTAL_OIDC_ISSUER_URL="https://keycloak.byeongwook-heo.sbx.hashidemos.io/realms/<realm>"
+export PORTAL_PUBLIC_URL="https://portal.example.invalid"
+export PORTAL_OIDC_ISSUER_URL="https://keycloak.example.invalid/realms/<realm>"
 export PORTAL_OIDC_SECRET_ID="arn:aws:secretsmanager:ap-northeast-2:ACCOUNT_ID:secret:security-portal/oidc"
 export PORTAL_OIDC_ALLOWED_GROUP="SECURITY_ANALYST"
 export ENABLE_VAULT_DIRECT="true"
-export VAULT_ADDR="http://security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200"
+export VAULT_ADDR="http://service.example.invalid:8200"
 export VAULT_ROLE_ID_SECRET_ID="security-portal-test/vault/readonly-role-id"
 export VAULT_SECRET_ID_SECRET_ID="security-portal-test/vault/readonly-secret-id"
 
@@ -177,7 +179,7 @@ The default remains `PORTAL_AUTH_MODE=deny`. The legacy CIDR-restricted lab mode
 The deployer includes these non-secret defaults:
 
 ```text
-VAULT_ADDR=http://security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200
+VAULT_ADDR=http://service.example.invalid:8200
 VAULT_ROLE_ID_SECRET_ID=security-portal-test/vault/readonly-role-id
 VAULT_SECRET_ID_SECRET_ID=security-portal-test/vault/readonly-secret-id
 ```
@@ -242,14 +244,14 @@ Do not grant secret data reads, PKI signing, token creation, lease revocation, o
 Expected unauthenticated behavior:
 
 ```bash
-curl -I https://portal.byeongwook-heo.sbx.hashidemos.io/
+curl -I https://portal.example.invalid/
 curl -i \
   -H 'X-User-Email: attacker@example.com' \
   -H 'X-User-Groups: SOC_ADMIN' \
   -X POST \
   -H 'Content-Type: application/json' \
   -d '{"action_id":"vault-pki-reissue-plan"}' \
-  https://portal.byeongwook-heo.sbx.hashidemos.io/api/workflows/actions/dry-run
+  https://portal.example.invalid/api/workflows/actions/dry-run
 ```
 
 The first request redirects into the OIDC flow. The forged-header request returns `401`; Nginx clears client-provided identity and authorization headers. After login, verify that a `SECURITY_ANALYST` can use the assistant and dry-run actions, while an unapproved Keycloak group is denied.
@@ -257,7 +259,7 @@ The first request redirects into the OIDC flow. The forged-header request return
 Health endpoints remain available to ALB and monitoring:
 
 ```bash
-curl -fsS https://portal.byeongwook-heo.sbx.hashidemos.io/health
+curl -fsS https://portal.example.invalid/health
 ```
 
 ## Rollback

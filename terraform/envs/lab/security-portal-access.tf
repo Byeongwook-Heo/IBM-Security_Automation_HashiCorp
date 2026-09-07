@@ -19,28 +19,28 @@ variable "security_portal_edge_certificate_arn" {
 
 variable "security_portal_edge_route53_zone_name" {
   type    = string
-  default = "byeongwook-heo.sbx.hashidemos.io"
+  default = null
 }
 
 variable "security_portal_edge_domain_name" {
   type    = string
-  default = "portal.byeongwook-heo.sbx.hashidemos.io"
+  default = null
 }
 
 variable "security_portal_edge_keycloak_domain_name" {
   type    = string
-  default = "keycloak.byeongwook-heo.sbx.hashidemos.io"
+  default = null
 }
 
 variable "security_portal_edge_target_instance_id" {
   type    = string
-  default = "i-0f55ad496197cb2b5"
+  default = null
 }
 
 variable "security_portal_edge_egress_instance_id" {
   description = "Optional EC2 instance that retains the edge-managed EIP when the ALB target moves."
   type        = string
-  default     = "i-09c656a6f462df4f2"
+  default     = null
   nullable    = true
 
   validation {
@@ -74,7 +74,7 @@ variable "security_portal_edge_egress_allocation_id" {
 }
 
 variable "security_portal_edge_subnet_ids" {
-  description = "Two or more public subnets in distinct AZs in vpc-085f5bb3399430e3f."
+  description = "Two or more public subnets in distinct AZs in vpc-00000000000000000."
   type        = list(string)
   default     = []
 }

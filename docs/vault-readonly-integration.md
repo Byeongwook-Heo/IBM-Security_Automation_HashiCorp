@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Security Portal Vault Read-only Integration
 
 ## Live preparation
@@ -5,9 +7,9 @@
 The portal-to-Vault path was re-verified on 2026-07-27 after the dedicated
 runtime cutover:
 
-- Portal runtime: EC2 `i-0f55ad496197cb2b5`
+- Portal runtime: EC2 `i-00000000000000000`
 - Vault endpoint:
-  `security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200`
+  `service.example.invalid:8200`
 - Vault ingress source: portal private IPv4 `/32`
 - Vault policy and AppRole: `security-portal-readonly`
 - Token TTL: 15 minutes; maximum TTL: 30 minutes
@@ -46,9 +48,9 @@ AppRole values without exposing them to the deployment workstation.
 
 ```bash
 AWS_REGION=ap-northeast-2 \
-PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5 \
+PORTAL_INSTANCE_ID=i-00000000000000000 \
 VAULT_INSTANCE_ID=<running-vault-node-instance-id> \
-VAULT_SECURITY_GROUP_ID=sg-008ac46b7cedb8ffe \
+VAULT_SECURITY_GROUP_ID=sg-00000000000000000 \
 VAULT_ROOT_TOKEN_FILE=/etc/vault.d/root-token \
   scripts/prepare-security-portal-vault-readonly.sh
 ```

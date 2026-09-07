@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Lab Deployment Status
 
 Last updated: 2026-07-27
@@ -15,9 +17,9 @@ dry-run plans and does not execute remediation.
 
 ## 2026-07-27 Live Release
 
-- Security Portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
+- Security Portal: `https://portal.example.invalid`
 - Keycloak issuer:
-  `https://keycloak.byeongwook-heo.sbx.hashidemos.io/realms/master`
+  `https://keycloak.example.invalid/realms/master`
 - The dedicated portal ALB is active and its port 8080 EC2 target is healthy.
 - HTTP redirects to HTTPS, unauthenticated API access returns HTTP 401, and the
   root OIDC flow redirects through Keycloak with the exact callback and PKCE
@@ -25,9 +27,9 @@ dry-run plans and does not execute remediation.
 - Keycloak uses the existing two-node deployment and shared RDS database. The
   confidential `security-portal` client maps the `SECURITY_ANALYST` group.
 - The ALB target is the dedicated portal EC2 instance
-  `i-0f55ad496197cb2b5` on approved AMI
+  `i-00000000000000000` on approved AMI
   `hc-security-base-ubuntu-2204-20260629151937`. The existing Elastic host
-  `i-09c656a6f462df4f2` retains EIP `52.78.14.203`; the cutover did not move or
+  `i-00000000000000000` retains EIP `192.0.2.203`; the cutover did not move or
   replace it.
 - OAuth2 Proxy stores encrypted sessions in the dedicated two-node TLS Valkey
   replication group. Cases, evidence, audit history, and approval records use
@@ -126,42 +128,42 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 
 ## Deployed
 
-- Security portal: `https://portal.byeongwook-heo.sbx.hashidemos.io`
-- Keycloak: `https://keycloak.byeongwook-heo.sbx.hashidemos.io`
+- Security portal: `https://portal.example.invalid`
+- Keycloak: `https://keycloak.example.invalid`
 - Portal edge ALB: `ibm-hc-lab-portal-edge`
-- Dedicated portal runtime: `i-0f55ad496197cb2b5` (`172.31.54.25`)
+- Dedicated portal runtime: `i-00000000000000000` (`192.0.2.25`)
 - Portal PostgreSQL:
-  `ibm-hc-lab-portal-postgres.cx4i8kgqav98.ap-northeast-2.rds.amazonaws.com:5432`
+  `ibm-hc-lab-portal-postgres.service.example.invalid:5432`
 - Portal TLS Valkey:
   `master.ibm-hc-lab-portal-cache.8b9wjy.apn2.cache.amazonaws.com:6379`
-- Shared Ollama endpoint: private `10.70.20.182:11434`, authenticated, cold
+- Shared Ollama endpoint: private `192.0.2.182:11434`, authenticated, cold
   start disabled
 - AWS Backup vault: `ibm-hc-lab-security-platform-vault`
 - Portal ALB access-log bucket:
-  `ibm-hc-lab-p-alb-063455554839-ap-northeast-2`
+  `ibm-hc-lab-p-alb-123456789012-ap-northeast-2`
 - Kibana direct lab endpoint (HTTP, CIDR-restricted, not linked from the
   portal): `http://ec2-52-78-14-203.ap-northeast-2.compute.amazonaws.com:5601`
-- Elastic SIEM instance: `i-09c656a6f462df4f2`
-- Data security lab RDS endpoint: `ibm-hc-lab-data-security-lab.cx4i8kgqav98.ap-northeast-2.rds.amazonaws.com:5432`
+- Elastic SIEM instance: `i-00000000000000000`
+- Data security lab RDS endpoint: `ibm-hc-lab-data-security-lab.service.example.invalid:5432`
 - Data security lab database: `security_lab`
-- Data security lab RDS security group: `sg-06cb3efb885230a16`
+- Data security lab RDS security group: `sg-00000000000000000`
 - RDS PostgreSQL version: `16.14`
 - RDS parameter group: `ibm-hc-lab-data-security-lab-pg`
 - RDS CloudWatch log group: `/aws/rds/instance/ibm-hc-lab-data-security-lab/postgresql`
 - Vault database config: `database/config/data-security-lab-postgres`
 - Vault dynamic credential role: `database/roles/data-security-lab-readwrite`
 - Test EKS cluster: `ibm-hc-lab-test-eks`
-- Test EKS VPC: `vpc-0faaeb5858901d385`
-- Test EKS private subnets: `subnet-026ffcc7ad4b697c6`, `subnet-06c50448784244f83`
-- Test EKS primary security group: `sg-07f27223d3c7b4d43`
-- Test EKS module security group: `sg-0e89f139b5b86c415`
+- Test EKS VPC: `vpc-00000000000000000`
+- Test EKS private subnets: `subnet-00000000000000000`, `subnet-00000000000000000`
+- Test EKS primary security group: `sg-00000000000000000`
+- Test EKS module security group: `sg-00000000000000000`
 - Test EKS Fargate profile: `ibm-hc-lab-test-eks-security-lab`
 - Test EKS namespace: `security-lab`
 
 ## Verified
 
 - Security portal health returns `{"status":"ok","mode":"mock+elastic"}`.
-- The portal ALB target group contains only `i-0f55ad496197cb2b5`, and the
+- The portal ALB target group contains only `i-00000000000000000`, and the
   target is `healthy`.
 - Portal case persistence queries succeed against PostgreSQL, and the Valkey
   TLS endpoint responds to `PING`.
@@ -185,7 +187,7 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 - Kibana reports `available`; Grafana reports database `ok`.
 - EC2 AMI policy check passed: running/stopped instances use `hc-security-base-*` or `hc-base-*` AMIs.
 - Test EKS cluster is `ACTIVE` on Kubernetes `1.36`.
-- Test EKS public API endpoint is restricted to `121.190.86.98/32`.
+- Test EKS public API endpoint is restricted to `192.0.2.98/32`.
 - Test EKS has no EC2 nodegroups. Workloads run on EKS Fargate, so no
   worker-node AMI was introduced and the approved AMI policy was not bypassed.
 - Kubernetes namespace `security-lab` and ConfigMap
@@ -217,14 +219,14 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 - The Terraform Enterprise ALB permits only the approved operator CIDRs on
   ports 80/443, and its `/_health_check` target is `healthy`.
 - Terraform state was migrated to the private, versioned, encrypted S3 bucket
-  `ibm-hc-lab-tfstate-063455554839-ap-northeast-2` at
+  `ibm-hc-lab-tfstate-123456789012-ap-northeast-2` at
   `security-automation/lab/terraform.tfstate`. Remote state matched the local
   migration snapshot and the post-migration plan returned no changes.
 
 ## Portal UI Deployment QA (2026-07-23)
 
 - The redesigned operations workspace was deployed to the existing Elastic
-  SIEM host `i-09c656a6f462df4f2`; no EC2 instance was created.
+  SIEM host `i-00000000000000000`; no EC2 instance was created.
 - The host remains on the approved
   `hc-security-base-ubuntu-2204-20260629151937` AMI and SSM reported `Online`.
 - The production portal serves the new routed frontend assets and `/health`
@@ -290,7 +292,7 @@ deploys through SSM, and verifies health, OIDC redirect, and the issuer.
 
 The Vault Radar CLI is installed on the operator workstation, and the local license file exists at:
 
-`/Users/heobyeong-ug/Documents/HashiCorp License/vault-radar.hclic`
+`./private/vault-radar.hclic`
 
 The HCP Vault Radar agent pool has an active local agent. Continuous TFE/S3
 source assignment still requires HCP-side configuration and approved source
@@ -312,7 +314,7 @@ Local scan verification on 2026-07-06 completed against this repository with `LI
 
 Live Elastic ingest on 2026-07-06 sent those 20 normalized findings into `logs-hashicorp_vault_radar.findings-lab`. The portal summary reported `vault_radar_findings = 21` after ingest, including the pre-existing demo finding.
 
-The user-provided Elastic API key from `/Users/heobyeong-ug/Documents/elastic API_key.rtf` was validated on 2026-07-06 without printing the key. It authenticated successfully and could search the Vault Radar, Vault audit, and PostgreSQL pgAudit data streams. The key was stored in Secrets Manager under `ibm-hc-lab-elastic-siem/bootstrap-credentials` as the portal read API key, and the portal backend environment was refreshed from that secret.
+The user-provided Elastic API key from `./private/elastic-api-key` was validated on 2026-07-06 without printing the key. It authenticated successfully and could search the Vault Radar, Vault audit, and PostgreSQL pgAudit data streams. The key was stored in Secrets Manager under `ibm-hc-lab-elastic-siem/bootstrap-credentials` as the portal read API key, and the portal backend environment was refreshed from that secret.
 
 Required values:
 
@@ -332,10 +334,10 @@ continuous data-source assignment still requires HCP Portal/API configuration.
 
 The Phase 4 runtime was redeployed and verified on 2026-07-14:
 
-- Instance: `i-0758e93b6bbde09fd`
+- Instance: `i-00000000000000000`
 - URL: `http://ec2-3-38-142-233.ap-northeast-2.compute.amazonaws.com:3000`
-- Security group: `sg-072b48f4e0d6b13c8`
-- Allowed ingress: Grafana `3000/tcp` from `121.190.86.98/32`
+- Security group: `sg-00000000000000000`
+- Allowed ingress: Grafana `3000/tcp` from `192.0.2.98/32`
 - Grafana admin credential secret: `ibm-hc-lab-observability/grafana-admin`
 - Running services: Prometheus, Grafana, Loki, Tempo, OpenTelemetry Collector
 

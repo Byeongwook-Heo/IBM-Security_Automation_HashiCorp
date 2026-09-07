@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Observability
 
 Phase 4 replaces the original Instana dependency with a self-managed observability stack for the security lab.
@@ -34,15 +36,15 @@ The module is wired into `terraform/envs/lab` behind `enable_observability_stack
 
 Phase 4 MVP is deployed in the lab environment:
 
-- Instance: `i-0758e93b6bbde09fd`
+- Instance: `i-00000000000000000`
 - Name: `ibm-hc-lab-observability-host`
 - AMI: `hc-security-base-ubuntu-2204-20260629151937`
 - Instance type: `t3.large`
 - Public URL: `http://ec2-3-38-142-233.ap-northeast-2.compute.amazonaws.com:3000`
-- Public IP: `3.38.142.233`
-- Private IP: `172.31.63.163`
-- Security group: `sg-072b48f4e0d6b13c8`
-- Exposed ingress: Grafana `3000/tcp` from `121.190.86.98/32`
+- Public IP: `192.0.2.233`
+- Private IP: `192.0.2.163`
+- Security group: `sg-00000000000000000`
+- Exposed ingress: Grafana `3000/tcp` from `192.0.2.98/32`
 - Grafana credential secret: `ibm-hc-lab-observability/grafana-admin`
 
 Running containers:

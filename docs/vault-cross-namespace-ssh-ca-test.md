@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Vault Cross-Namespace SSH CA Test
 
 ## Summary
@@ -15,8 +17,8 @@ Vault Enterprise cross-namespace access로 다른 namespace의 SSH CA에 서명 
 | Item | Value |
 | --- | --- |
 | AWS region | `ap-northeast-2` |
-| Instance ID | `i-00199ee2be3c2fa15` |
-| Public IP | `3.39.247.218` |
+| Instance ID | `i-00000000000000000` |
+| Public IP | `192.0.2.218` |
 | Instance type | `t3.large` |
 | AMI | `hc-security-base-ubuntu-2204-20260629151937` |
 | Vault version | `Vault v2.0.3+ent` |
@@ -132,7 +134,7 @@ SSH signing role에는 Vault 2.x에서 요구하는 `key_type="ca"`를 명시했
 cd terraform/envs/vault-cross-namespace-test
 terraform destroy \
   -var="key_name=Byeongwook" \
-  -var='ssh_ingress_cidrs=["121.190.86.98/32"]' \
+  -var='ssh_ingress_cidrs=["192.0.2.98/32"]' \
   -var="vault_license_secret_arn=$VAULT_LICENSE_SECRET_ARN"
 ```
 

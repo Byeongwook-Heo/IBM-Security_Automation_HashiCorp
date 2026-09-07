@@ -29,6 +29,7 @@ def run_deployer_preflight(**overrides: str) -> subprocess.CompletedProcess[str]
         "AWS_DEFAULT_REGION",
     ):
         env.pop(name, None)
+    env["INSTANCE_ID"] = "i-00000000000000000"
     env.update(overrides)
     return subprocess.run(
         ["bash", str(DEPLOYER)],
@@ -202,10 +203,7 @@ def test_vault_approle_values_are_fetched_only_on_the_remote_host() -> None:
     compose = COMPOSE.read_text(encoding="utf-8")
 
     assert 'ENABLE_VAULT_DIRECT="${ENABLE_VAULT_DIRECT:-false}"' in deployer
-    assert (
-        'VAULT_ADDR="${VAULT_ADDR:-http://security-portal-test-vault-nlb-'
-        "744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200}\""
-    ) in deployer
+    assert 'VAULT_ADDR="${VAULT_ADDR:-}"' in deployer
     assert (
         'VAULT_ROLE_ID_SECRET_ID="${VAULT_ROLE_ID_SECRET_ID:-'
         "security-portal-test/vault/readonly-role-id}\""
@@ -282,8 +280,13 @@ def test_https_edge_is_opt_in_and_never_selects_the_other_application_alb() -> N
     env = EDGE_ENV.read_text(encoding="utf-8")
 
     assert 'default     = false' in env
-    assert 'default = "portal.byeongwook-heo.sbx.hashidemos.io"' in env
-    assert 'default = "keycloak.byeongwook-heo.sbx.hashidemos.io"' in env
+    for name in (
+        "security_portal_edge_domain_name",
+        "security_portal_edge_keycloak_domain_name",
+        "security_portal_edge_target_instance_id",
+    ):
+        block = env.split(f'variable "{name}" {{', 1)[1].split("}", 1)[0]
+        assert "null" in block
     assert 'default     = "hashicorp-lab-dev-keycloak-alb"' in env
     assert (
         'lower(trimspace(var.security_portal_edge_keycloak_alb_name)) '

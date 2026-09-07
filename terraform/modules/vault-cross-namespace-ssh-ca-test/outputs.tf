@@ -7,7 +7,7 @@ output "public_ip" {
 }
 
 output "ssh_command" {
-  value = "ssh -i /Users/heobyeong-ug/Documents/Byeongwook.pem ubuntu@${aws_instance.this.public_ip}"
+  value = "ssh -i ~/.ssh/lab.pem ubuntu@${aws_instance.this.public_ip}"
 }
 
 output "report_path" {

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
-INSTANCE_ID="${INSTANCE_ID:-i-0f55ad496197cb2b5}"
+INSTANCE_ID="${INSTANCE_ID:?Set INSTANCE_ID for your environment}"
 ELASTIC_SECRET_ID="${ELASTIC_SECRET_ID:-ibm-hc-lab-elastic-siem/bootstrap-credentials}"
 ELASTIC_URL="${ELASTIC_URL:-http://127.0.0.1:9200}"
 ELASTIC_VERIFY_TLS="${ELASTIC_VERIFY_TLS:-false}"
@@ -23,7 +23,7 @@ PORTAL_OIDC_SECRET_ID="${PORTAL_OIDC_SECRET_ID:-}"
 PORTAL_OIDC_ALLOWED_GROUP="${PORTAL_OIDC_ALLOWED_GROUP:-SECURITY_ANALYST}"
 PORTAL_OIDC_GROUPS_CLAIM="${PORTAL_OIDC_GROUPS_CLAIM:-groups}"
 ENABLE_VAULT_DIRECT="${ENABLE_VAULT_DIRECT:-false}"
-VAULT_ADDR="${VAULT_ADDR:-http://security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200}"
+VAULT_ADDR="${VAULT_ADDR:-}"
 VAULT_ROLE_ID_SECRET_ID="${VAULT_ROLE_ID_SECRET_ID:-security-portal-test/vault/readonly-role-id}"
 VAULT_SECRET_ID_SECRET_ID="${VAULT_SECRET_ID_SECRET_ID:-security-portal-test/vault/readonly-secret-id}"
 VAULT_NAMESPACE="${VAULT_NAMESPACE:-}"

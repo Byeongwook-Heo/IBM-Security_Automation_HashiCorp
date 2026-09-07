@@ -467,7 +467,7 @@ not an active remediation engine.
 
 The lab state was migrated on 2026-07-14 to:
 
-`s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`
+`s3://ibm-hc-lab-tfstate-123456789012-ap-northeast-2/security-automation/lab/terraform.tfstate`
 
 The bucket is private, versioned, encrypted, and uses Terraform's native S3
 lockfile. To repeat or recover a migration after reviewing the script inputs:

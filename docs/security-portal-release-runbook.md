@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Security Portal Release Runbook
 
 This runbook is the shortest supported path from a refreshed AWS session to the
@@ -37,9 +39,9 @@ versions, or the portal-to-Vault security-group rule must be repaired.
 
 ```bash
 AWS_REGION=ap-northeast-2 \
-PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5 \
+PORTAL_INSTANCE_ID=i-00000000000000000 \
 VAULT_INSTANCE_ID=<running-vault-node-instance-id> \
-VAULT_SECURITY_GROUP_ID=sg-008ac46b7cedb8ffe \
+VAULT_SECURITY_GROUP_ID=sg-00000000000000000 \
   scripts/prepare-security-portal-vault-readonly.sh
 ```
 
@@ -62,12 +64,12 @@ ADMIN_CIDR=<operator-public-ip>/32 \
 
 Review the Terraform plan. In particular, confirm:
 
-- the target is `i-0f55ad496197cb2b5`
-- EIP ownership remains with the Elastic host `i-09c656a6f462df4f2`
+- the target is `i-00000000000000000`
+- EIP ownership remains with the Elastic host `i-00000000000000000`
 - the new ALB name is `ibm-hc-lab-portal-edge`
 - the only existing ALB selected is `hashicorp-lab-dev-keycloak-alb`
-- the certificate covers both `portal.byeongwook-heo.sbx.hashidemos.io` and
-  `keycloak.byeongwook-heo.sbx.hashidemos.io`
+- the certificate covers both `portal.example.invalid` and
+  `keycloak.example.invalid`
 - ingress is restricted to the supplied administrator CIDR
 
 ## 4. Apply, configure Keycloak, deploy, and verify
@@ -104,10 +106,10 @@ export KEYCLOAK_REALM=master
 export PORTAL_EDGE_SUBNET_IDS=subnet-a,subnet-b
 export PORTAL_CERTIFICATE_ARN=arn:aws:acm:ap-northeast-2:ACCOUNT_ID:certificate/ID
 export PORTAL_OIDC_SECRET_ID=security-portal-test/keycloak/security-portal-oidc
-export PORTAL_INSTANCE_ID=i-0f55ad496197cb2b5
-export PORTAL_EGRESS_INSTANCE_ID=i-09c656a6f462df4f2
+export PORTAL_INSTANCE_ID=i-00000000000000000
+export PORTAL_EGRESS_INSTANCE_ID=i-00000000000000000
 export AI_ASSISTANT_PROVIDER=ollama
-export OLLAMA_BASE_URL=http://10.70.20.182:11434
+export OLLAMA_BASE_URL=http://192.0.2.182:11434
 export OLLAMA_MODEL=qwen3:8b
 export OLLAMA_API_TOKEN_SECRET_ID=security-portal-test/ollama-api-token
 ```

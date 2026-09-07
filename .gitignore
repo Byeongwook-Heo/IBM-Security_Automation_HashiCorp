@@ -15,3 +15,14 @@ dist/
 portal/build/
 observability/build/
 .coverage
+
+# Private runtime material: keep example configuration only
+private/
+*.key
+*.pem
+*.hclic
+.env.*
+!.env.example
+*.tfvars
+*.tfvars.json
+!*.tfvars.example

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
-INSTANCE_ID="${INSTANCE_ID:-i-09c656a6f462df4f2}"
+INSTANCE_ID="${INSTANCE_ID:?Set INSTANCE_ID for your environment}"
 ELASTIC_SECRET_ID="${ELASTIC_SECRET_ID:-ibm-hc-lab-elastic-siem/bootstrap-credentials}"
 LOCAL_PORT="${LOCAL_PORT:-19200}"
 REMOTE_PORT="${REMOTE_PORT:-9200}"

@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCAN_TARGET="${SCAN_TARGET:-$ROOT_DIR}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
 ELASTIC_LIVE="${ELASTIC_LIVE:-false}"
-ELASTIC_INSTANCE_ID="${ELASTIC_INSTANCE_ID:-i-09c656a6f462df4f2}"
+ELASTIC_INSTANCE_ID="${ELASTIC_INSTANCE_ID:-}"
 ELASTIC_SECRET_ID="${ELASTIC_SECRET_ID:-ibm-hc-lab-elastic-siem/bootstrap-credentials}"
 ELASTIC_DATA_STREAM="${ELASTIC_DS_APPLICATION_RISK:-logs-security_application.risk-lab}"
 ELASTIC_LOCAL_PORT="${ELASTIC_LOCAL_PORT:-19202}"
@@ -213,6 +213,7 @@ if [[ "$ELASTIC_LIVE" != "true" ]]; then
   exit 0
 fi
 
+: "${ELASTIC_INSTANCE_ID:?Set ELASTIC_INSTANCE_ID before live ingestion}"
 aws sts get-caller-identity >/dev/null
 elastic_secret_json="$(
   aws secretsmanager get-secret-value \

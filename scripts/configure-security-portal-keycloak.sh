@@ -2,14 +2,14 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
-KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-https://keycloak.byeongwook-heo.sbx.hashidemos.io}"
+KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-https://keycloak.example.invalid}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-master}"
 KEYCLOAK_ADMIN_SECRET_ID="${KEYCLOAK_ADMIN_SECRET_ID:-hashicorp-lab-dev-keycloak-admin}"
-PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-https://portal.byeongwook-heo.sbx.hashidemos.io}"
+PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-https://portal.example.invalid}"
 PORTAL_OIDC_CLIENT_ID="${PORTAL_OIDC_CLIENT_ID:-security-portal}"
 PORTAL_OIDC_GROUP="${PORTAL_OIDC_GROUP:-SECURITY_ANALYST}"
 PORTAL_OIDC_SECRET_ID="${PORTAL_OIDC_SECRET_ID:-security-portal-test/keycloak/security-portal-oidc}"
-PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:-i-0f55ad496197cb2b5}"
+PORTAL_INSTANCE_ID="${PORTAL_INSTANCE_ID:?Set PORTAL_INSTANCE_ID for your environment}"
 PORTAL_ROLE_ARN="${PORTAL_ROLE_ARN:-}"
 
 for command_name in aws curl jq openssl python3; do

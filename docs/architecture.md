@@ -1,3 +1,5 @@
+> 공개용 예시: 아래 주소·리소스 ID·파일명은 익명화되었습니다. 실제 접속값은 본인 환경에서 확인하세요. 과거 작업 기록은 현재 서비스 상태를 보장하지 않습니다.
+
 # Architecture
 
 This document describes the architecture for the integrated security lab.
@@ -35,13 +37,13 @@ The rows below reflect the live inventory re-verified on 2026-07-27.
 
 | Component | Current implementation |
 | --- | --- |
-| AWS account/region | `063455554839`, `ap-northeast-2` |
+| AWS account/region | `123456789012`, `ap-northeast-2` |
 | Approved EC2 image policy | `hc-security-base-*` or `hc-base-*` |
-| Security portal | Dedicated EC2 `i-0f55ad496197cb2b5`, approved AMI, SSM-managed, ALB target |
-| Elastic / Kibana | EC2 `i-09c656a6f462df4f2`; EIP `52.78.14.203` remains attached |
-| Terraform Enterprise | `ibm-hc-lab-tfe-alb-327586627.ap-northeast-2.elb.amazonaws.com` |
-| Vault | Internal NLB `security-portal-test-vault-nlb-744561f04bbe69f4.elb.ap-northeast-2.amazonaws.com:8200` |
-| Keycloak | `hashicorp-lab-dev-keycloak-alb-1501591011.ap-northeast-2.elb.amazonaws.com` |
+| Security portal | Dedicated EC2 `i-00000000000000000`, approved AMI, SSM-managed, ALB target |
+| Elastic / Kibana | EC2 `i-00000000000000000`; EIP `192.0.2.203` remains attached |
+| Terraform Enterprise | `service.example.invalid` |
+| Vault | Internal NLB `service.example.invalid:8200` |
+| Keycloak | `service.example.invalid` |
 | Portal state | Multi-AZ RDS PostgreSQL `ibm-hc-lab-portal-postgres` and two-node TLS Valkey `ibm-hc-lab-portal-cache` |
 | PostgreSQL / pgAudit | Private RDS `ibm-hc-lab-data-security-lab` |
 | Kubernetes | EKS `ibm-hc-lab-test-eks`, private-subnet Fargate, no EC2 nodes |
@@ -82,7 +84,7 @@ The rows below reflect the live inventory re-verified on 2026-07-27.
     only the dedicated portal EC2 and RDS through the narrow backup tag.
 
 Terraform state is stored at
-`s3://ibm-hc-lab-tfstate-063455554839-ap-northeast-2/security-automation/lab/terraform.tfstate`
+`s3://ibm-hc-lab-tfstate-123456789012-ap-northeast-2/security-automation/lab/terraform.tfstate`
 with versioning, server-side encryption, blocked public access, and Terraform's
 native S3 lockfile. StackStorm is not part of the active remediation path; its
 EC2 module creates only a private review host from an approved AMI and defaults
